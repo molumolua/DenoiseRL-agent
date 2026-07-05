@@ -20,7 +20,89 @@ All scripts source `params.sh`. Override any default with env vars, e.g.:
 MODEL_PATH=Qwen/Qwen2.5-7B-Instruct TP_SIZE=4 N_GPUS_PER_NODE=4 bash recipe/alfworld_denoise/run_grpo_train.sh
 ```
 
+Relative `MODEL_PATH` values are resolved under:
+
+```bash
+/inspire/hdd/global_user/xucaijun-253108120121/Model
+```
+
+For example, `MODEL_PATH=qwen/qwen2.5-1.5B-instruct` becomes `/inspire/hdd/global_user/xucaijun-253108120121/Model/qwen/qwen2.5-1.5B-instruct`. Absolute paths are used as-is.
+
 The default prompt length is intentionally lower than long-horizon AppWorld-style settings: ALFWorld prompts are mostly task text plus compact action history, so `4096 / 512` is usually a better first budget than a very long context. If you increase `HISTORY_LENGTH` or keep verbose observations, override `PROMPT_LENGTH` and `MAX_MODEL_LEN` together.
+
+## Offline Data
+
+The scripts default to repo-local data under `recipe/alfworld_denoise/local_data/`, which is ignored by git (`recipe/alfworld_denoise/.gitignore`). This layout is designed to be fully usable on a no-network cluster: download once on a machine with internet, then `rsync`/`scp` the whole `local_data/` directory up.
+
+Expected layout:
+
+```text
+recipe/alfworld_denoise/local_data/
+  downloads/                       # original zip archives (only needed for extraction)
+    json_2.1.1_json.zip
+    json_2.1.1_pddl.zip
+    json_2.1.1_tw-pddl.zip
+  alfworld/                        # $ALFWORLD_DATA
+    json_2.1.1/
+      train/
+      valid_seen/
+      valid_unseen/
+    logic/
+      alfred.pddl
+      alfred.twl2
+  verl_agent/
+    text/
+      train.parquet
+      test.parquet
+```
+
+`ALFWORLD_DATA` defaults to `recipe/alfworld_denoise/local_data/alfworld`. If the trainer parquet files already exist, `prepare_alfworld_data` skips the Hugging Face download path. On a no-network machine, set `OFFLINE_DATA_ONLY=1` to fail fast if the parquet files are missing.
+
+### One-time download (on a machine with internet)
+
+`setup_data.sh` extracts the zips and (re)generates the parquet files. The zips themselves have to be downloaded first; `githubfast.com` is a fast GitHub mirror.
+
+```bash
+cd recipe/alfworld_denoise/local_data/downloads
+
+# The three ALFWorld archives (~145 MB total).
+for z in json_2.1.1_json.zip json_2.1.1_pddl.zip json_2.1.1_tw-pddl.zip; do
+  curl -L -o "$z" "https://githubfast.com/alfworld/alfworld/releases/download/0.2.2/$z"
+done
+
+# Optional: HF mirror for the geometry3k placeholder dataset used by prepare.py.
+# Once cached, parquet generation works fully offline via HF_HUB_OFFLINE=1.
+export HF_ENDPOINT=https://hf-mirror.com
+python3 -c "import datasets; datasets.load_dataset('hiyouga/geometry3k')"
+
+# Back at the repo root: extract + build parquet.
+cd -
+bash recipe/alfworld_denoise/setup_data.sh --offline
+```
+
+### Syncing to a no-network cluster
+
+```bash
+rsync -avh --progress \
+  recipe/alfworld_denoise/local_data/ \
+  user@cluster:/path/to/verl-agent/recipe/alfworld_denoise/local_data/
+```
+
+The `downloads/` folder (~145 MB) only needs to be transferred once; after extraction you can delete it on the cluster to save space. The `alfworld/` and `verl_agent/` trees are required at run time.
+
+### On the cluster (no internet)
+
+Re-run `setup_data.sh` to verify or rebuild from the cached zips. With everything already in place, it is a no-op except for sanity checks:
+
+```bash
+bash recipe/alfworld_denoise/setup_data.sh --skip-extract
+# or, if you only synced the zips and want to extract + build parquet there:
+bash recipe/alfworld_denoise/setup_data.sh --offline
+
+export OFFLINE_DATA_ONLY=1   # fail fast if anything is missing instead of hitting HF
+```
+
+`setup_data.sh --help` lists all flags (`--skip-extract`, `--skip-parquet`, `--force-parquet`, `--offline`, `--train-size`, `--val-size`).
 
 ## Baselines
 

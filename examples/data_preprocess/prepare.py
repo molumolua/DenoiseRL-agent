@@ -18,7 +18,22 @@ Preprocess the Geometry3k dataset to parquet format
 import os
 import datasets
 
-from verl.utils.hdfs_io import copy, makedirs
+try:
+    from verl.utils.hdfs_io import copy, makedirs
+except ImportError:
+    # Allows running this script without the full verl stack (e.g. on a
+    # no-network machine that just needs to (re)generate the parquet files
+    # from an already-downloaded HF cache).
+    import shutil
+
+    def makedirs(name, mode=0o777, exist_ok=False, **kwargs):
+        os.makedirs(name, mode=mode, exist_ok=exist_ok)
+
+    def copy(src, dst, **kwargs):
+        if os.path.isdir(src):
+            return shutil.copytree(src, dst, **kwargs)
+        return shutil.copy(src, dst, **kwargs)
+
 import argparse
 
 if __name__ == '__main__':
@@ -28,10 +43,19 @@ if __name__ == '__main__':
     parser.add_argument('--hdfs_dir', default=None)
     parser.add_argument('--train_data_size', default=256, type=int)
     parser.add_argument('--val_data_size', default=256, type=int)
+    # Offline / mirror friendly: when set, datasets.load_dataset is told to use
+    # the local cache only. Also honours HF_ENDPOINT / HF_HUB_OFFLINE env vars.
+    parser.add_argument(
+        '--offline',
+        action='store_true',
+        default=os.getenv('HF_HUB_OFFLINE', '0') == '1',
+        help='Force datasets to use the local HF cache only (no network).',
+    )
 
     args = parser.parse_args()
     print(f"processing data for mode: {args.mode}")
     args.local_dir = os.path.join(args.local_dir, args.mode)
+    os.makedirs(args.local_dir, exist_ok=True)
 
     data_source = 'hiyouga/geometry3k'
     """
@@ -39,6 +63,10 @@ if __name__ == '__main__':
     We do NOT use the data in 'hiyouga/geometry3k', instead we only use it to indicate the modality and the data size.
     See details: https://github.com/langfengQ/verl-agent?tab=readme-ov-file#2-data-preparation
     """
+
+    if args.offline:
+        os.environ.setdefault('HF_HUB_OFFLINE', '1')
+        os.environ.setdefault('HF_DATASETS_OFFLINE', '1')
 
     dataset = datasets.load_dataset(data_source)
 

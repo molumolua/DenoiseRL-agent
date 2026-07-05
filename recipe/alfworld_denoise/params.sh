@@ -2,8 +2,18 @@
 
 export VLLM_ATTENTION_BACKEND=${VLLM_ATTENTION_BACKEND:-XFORMERS}
 
+RECIPE_DIR=${RECIPE_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}
+LOCAL_DATA_DIR=${LOCAL_DATA_DIR:-"${RECIPE_DIR}/local_data"}
+VERL_AGENT_DATA_DIR=${VERL_AGENT_DATA_DIR:-"${LOCAL_DATA_DIR}/verl_agent"}
+export ALFWORLD_DATA=${ALFWORLD_DATA:-"${LOCAL_DATA_DIR}/alfworld"}
+
 ENGINE=${ENGINE:-vllm}
-MODEL_PATH=${MODEL_PATH:-Qwen/Qwen2.5-1.5B-Instruct}
+MODEL_ROOT=${MODEL_ROOT:-/inspire/hdd/global_user/xucaijun-253108120121/Model}
+MODEL_PATH=${MODEL_PATH:-${MODEL_NAME:-Qwen/Qwen2.5-1.5B-Instruct}}
+case "${MODEL_PATH}" in
+  /*) ;;
+  *) MODEL_PATH="${MODEL_ROOT%/}/${MODEL_PATH}" ;;
+esac
 
 TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE:-16}
 VAL_BATCH_SIZE=${VAL_BATCH_SIZE:-128}
@@ -41,15 +51,29 @@ SAVE_FREQ=${SAVE_FREQ:--1}
 PROJECT_NAME=${PROJECT_NAME:-verl_agent_alfworld_unified}
 
 prepare_alfworld_data() {
+  local train_file="${VERL_AGENT_DATA_DIR}/text/train.parquet"
+  local val_file="${VERL_AGENT_DATA_DIR}/text/test.parquet"
+  if [[ -f "${train_file}" && -f "${val_file}" ]]; then
+    echo "Using local trainer parquet files: ${VERL_AGENT_DATA_DIR}/text"
+    return 0
+  fi
+
+  if [[ "${OFFLINE_DATA_ONLY:-0}" == "1" ]]; then
+    echo "Missing local trainer parquet files under ${VERL_AGENT_DATA_DIR}/text and OFFLINE_DATA_ONLY=1."
+    echo "Expected: ${train_file} and ${val_file}"
+    exit 1
+  fi
+
   python3 -m examples.data_preprocess.prepare \
     --mode text \
+    --local_dir "${VERL_AGENT_DATA_DIR}" \
     --train_data_size "${TRAIN_BATCH_SIZE}" \
     --val_data_size "${VAL_BATCH_SIZE}"
 }
 
 ALFWORLD_COMMON_ARGS=(
-  "data.train_files=$HOME/data/verl-agent/text/train.parquet"
-  "data.val_files=$HOME/data/verl-agent/text/test.parquet"
+  "data.train_files=${VERL_AGENT_DATA_DIR}/text/train.parquet"
+  "data.val_files=${VERL_AGENT_DATA_DIR}/text/test.parquet"
   "data.train_batch_size=${TRAIN_BATCH_SIZE}"
   "data.val_batch_size=${VAL_BATCH_SIZE}"
   "data.max_prompt_length=${PROMPT_LENGTH}"
