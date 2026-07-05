@@ -110,19 +110,23 @@ EXPECTED_ZIPS=(
   json_2.1.1_tw-pddl.zip
 )
 # Rough lower bounds (bytes). Used to detect truncated/HTML error pages.
-declare -A MIN_SIZE=(
-  [json_2.1.1_json.zip]=60000000     # ~69 MB
-  [json_2.1.1_pddl.zip]=28000000     # ~33 MB
-  [json_2.1.1_tw-pddl.zip]=38000000  # ~43 MB
-)
+# (Plain case statement so this works on macOS bash 3.2 as well.)
+_min_size_for() {
+  case "$1" in
+    json_2.1.1_json.zip)    echo 60000000 ;;  # ~69 MB
+    json_2.1.1_pddl.zip)    echo 28000000 ;;  # ~33 MB
+    json_2.1.1_tw-pddl.zip) echo 38000000 ;;  # ~43 MB
+    *)                      echo 0 ;;
+  esac
+}
 
-# Returns 0 if ${DOWNLOADS_DIR}/${1} exists and is larger than MIN_SIZE[${1}].
+# Returns 0 if ${DOWNLOADS_DIR}/${1} exists and is larger than its min size.
 zip_ok() {
   local name="$1" path="${DOWNLOADS_DIR}/$1"
   [[ -f "${path}" ]] || return 1
   local sz min
   sz=$(stat -c%s "${path}" 2>/dev/null || stat -f%z "${path}" 2>/dev/null || echo 0)
-  min="${MIN_SIZE[${name}]:-0}"
+  min=$(_min_size_for "${name}")
   [[ "${sz}" -ge "${min}" ]]
 }
 

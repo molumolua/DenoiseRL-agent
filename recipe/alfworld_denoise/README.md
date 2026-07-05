@@ -60,25 +60,24 @@ recipe/alfworld_denoise/local_data/
 
 ### One-time download (on a machine with internet)
 
-`setup_data.sh` extracts the zips and (re)generates the parquet files. The zips themselves have to be downloaded first; `githubfast.com` is a fast GitHub mirror.
+`setup_data.sh --download` fetches the three ALFWorld zips from a GitHub mirror (default `githubfast.com`, much faster than `github.com` from China), extracts them, and regenerates the parquet files. Pass `--offline` so parquet generation uses the local HF cache instead of hitting `huggingface.co`.
 
 ```bash
-cd recipe/alfworld_denoise/local_data/downloads
-
-# The three ALFWorld archives (~145 MB total).
-for z in json_2.1.1_json.zip json_2.1.1_pddl.zip json_2.1.1_tw-pddl.zip; do
-  curl -L -o "$z" "https://githubfast.com/alfworld/alfworld/releases/download/0.2.2/$z"
-done
-
-# Optional: HF mirror for the geometry3k placeholder dataset used by prepare.py.
-# Once cached, parquet generation works fully offline via HF_HUB_OFFLINE=1.
+# Optional: pre-populate the HF cache for hiyouga/geometry3k via the HF mirror.
+# After this, --offline works without any further network access.
 export HF_ENDPOINT=https://hf-mirror.com
 python3 -c "import datasets; datasets.load_dataset('hiyouga/geometry3k')"
 
-# Back at the repo root: extract + build parquet.
-cd -
-bash recipe/alfworld_denoise/setup_data.sh --offline
+# One shot: download (~145 MB) + extract + build parquet.
+bash recipe/alfworld_denoise/setup_data.sh --download --offline
 ```
+
+Useful flags (see `setup_data.sh --help` for the full list):
+
+- `--force-download` – re-download even if the zips are already present.
+- `--mirror URL` – use a different mirror, e.g. `--mirror https://github.com`.
+- `--release TAG` – pick a different alfworld release tag (default `0.2.2`).
+- `--force-parquet` – regenerate the parquet files (e.g. after changing `--train-size`/`--val-size`).
 
 ### Syncing to a no-network cluster
 
