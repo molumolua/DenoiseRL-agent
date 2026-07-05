@@ -1,6 +1,7 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euxo pipefail
 
-set -x
+export WANDB_MODE=offline
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 source "${SCRIPT_DIR}/params.sh"

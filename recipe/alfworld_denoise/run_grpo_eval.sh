@@ -1,5 +1,7 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euxo pipefail
 
+export WANDB_MODE=offline
 set -x
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
