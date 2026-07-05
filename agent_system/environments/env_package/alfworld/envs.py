@@ -61,6 +61,24 @@ class AlfworldWorker:
     def __init__(self, config, seed, base_env):
         self.env = base_env.init_env(batch_size=1)  # Each worker holds only one sub-environment
         self.env.seed(seed)
+
+    def _extract_prefix_actions(self, trajectory_prefix):
+        if not trajectory_prefix:
+            return []
+        if isinstance(trajectory_prefix, dict):
+            if "actions" in trajectory_prefix:
+                return list(trajectory_prefix["actions"])
+            if "steps" in trajectory_prefix:
+                return [step["action"] for step in trajectory_prefix["steps"] if step.get("action")]
+        if isinstance(trajectory_prefix, (list, tuple)):
+            actions = []
+            for item in trajectory_prefix:
+                if isinstance(item, str):
+                    actions.append(item)
+                elif isinstance(item, dict) and item.get("action"):
+                    actions.append(item["action"])
+            return actions
+        return []
     
     def step(self, action):
         """Execute a step in the environment"""
@@ -70,10 +88,25 @@ class AlfworldWorker:
         infos['observation_text'] = obs
         return obs, scores, dones, infos
     
-    def reset(self):
+    def reset(self, trajectory_prefix=None):
         """Reset the environment"""
         obs, infos = self.env.reset()
+        initial_obs = obs[0]
+        prefix_history = []
+        prefix_done = False
+
+        for action in self._extract_prefix_actions(trajectory_prefix):
+            prefix_history.append({"text_obs": obs[0], "action": action})
+            obs, _, dones, infos = self.env.step([action])
+            prefix_done = bool(dones[0])
+            if prefix_done:
+                break
+
         infos['observation_text'] = obs
+        infos['initial_observation_text'] = [initial_obs]
+        infos['prefix_history'] = [prefix_history]
+        infos['prefix_len'] = [len(prefix_history)]
+        infos['prefix_done'] = [prefix_done]
         return obs, infos
     
     def getobs(self):
@@ -143,18 +176,39 @@ class AlfworldEnvs(gym.Env):
 
         return text_obs_list, image_obs_list, rewards_list, dones_list, info_list
 
-    def reset(self):
+    def _normalize_reset_kwargs(self, kwargs):
+        if kwargs is None:
+            return [{} for _ in range(self.num_processes)]
+        if isinstance(kwargs, np.ndarray):
+            kwargs = kwargs.tolist()
+        if isinstance(kwargs, dict):
+            return [dict(kwargs) for _ in range(self.num_processes)]
+        if isinstance(kwargs, list):
+            if len(kwargs) != self.num_processes:
+                raise ValueError(
+                    f"reset kwargs length ({len(kwargs)}) must match num_processes ({self.num_processes})."
+                )
+            return [dict(item or {}) for item in kwargs]
+        raise TypeError(f"Unsupported reset kwargs type: {type(kwargs)}")
+
+    def reset(self, kwargs=None):
         """
         Send the reset command to all workers at once and collect initial obs/info from each environment.
         """
+        reset_kwargs = self._normalize_reset_kwargs(kwargs)
         text_obs_list = []
         image_obs_list = []
         info_list = []
 
         # Send reset commands to all workers
         futures = []
-        for worker in self.workers:
-            future = worker.reset.remote()
+        for i, worker in enumerate(self.workers):
+            trajectory_prefix = (
+                reset_kwargs[i].get("trajectory_prefix")
+                or reset_kwargs[i].get("prefix_actions")
+                or reset_kwargs[i].get("prefix_steps")
+            )
+            future = worker.reset.remote(trajectory_prefix)
             futures.append(future)
 
         # Collect results

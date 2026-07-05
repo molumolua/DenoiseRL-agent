@@ -136,15 +136,33 @@ class AlfWorldEnvironmentManager(EnvironmentManagerBase):
         super().__init__(envs, projection_f, config)
     
     def reset(self, kwargs):
-        text_obs, image_obs, infos = self.envs.reset()
+        text_obs, image_obs, infos = self.envs.reset(kwargs=kwargs)
         self.gamefile = parse_gamefile(infos)
         # initialize the history buffer
         self.memory.reset(batch_size = len(text_obs))
         self.tasks = []
         self.pre_text_obs = text_obs
-        self.extract_task(text_obs)
+        task_obs = [info.get("initial_observation_text", text_obs[i]) for i, info in enumerate(infos)]
+        self.extract_task(task_obs)
 
-        full_text_obs = self.build_text_obs(text_obs, self.envs.get_admissible_commands, init=True)
+        prefix_lens = [int(info.get("prefix_len", 0) or 0) for info in infos]
+        if any(prefix_lens):
+            self.memory.keys = ["text_obs", "action"]
+            for i, info in enumerate(infos):
+                self.memory._data[i] = [
+                    {"text_obs": step.get("text_obs", ""), "action": step.get("action", "")}
+                    for step in (info.get("prefix_history", []) or [])
+                    if step.get("action") is not None
+                ]
+
+            init_obs = self.build_text_obs(text_obs, self.envs.get_admissible_commands, init=True)
+            history_obs = self.build_text_obs(text_obs, self.envs.get_admissible_commands)
+            full_text_obs = [
+                history_obs[i] if prefix_lens[i] > 0 else init_obs[i]
+                for i in range(len(text_obs))
+            ]
+        else:
+            full_text_obs = self.build_text_obs(text_obs, self.envs.get_admissible_commands, init=True)
         return {'text': full_text_obs, 'image': image_obs, 'anchor': text_obs}, infos
     
     def step(self, text_actions: List[str]):

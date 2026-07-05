@@ -159,7 +159,20 @@ class TaskRunner:
         assert config.actor_rollout_ref.rollout.n == 1, "In verl, actor_rollout_ref.rollout.n>1 is for GRPO. In verl+env, we keep n=1, and achieve GRPO by env.rollout.n"
 
         from agent_system.multi_turn_rollout import TrajectoryCollector
-        traj_collector = TrajectoryCollector(config=config, tokenizer=tokenizer, processor=processor)
+
+        traj_collector_cls = TrajectoryCollector
+        traj_collector_cfg = config.get("traj_collector", {}).get("custom_cls", {})
+        if traj_collector_cfg.get("path", None) is not None:
+            from verl.utils.import_utils import load_extern_type
+
+            traj_collector_cls = load_extern_type(traj_collector_cfg.path, traj_collector_cfg.name)
+            if not issubclass(traj_collector_cls, TrajectoryCollector):
+                raise TypeError(
+                    f"The custom trajectory collector '{traj_collector_cfg.name}' "
+                    "must inherit from agent_system.multi_turn_rollout.TrajectoryCollector"
+                )
+        print(f"Using trajectory collector class: {traj_collector_cls.__name__}")
+        traj_collector = traj_collector_cls(config=config, tokenizer=tokenizer, processor=processor)
 
         from verl.utils.dataset.rl_dataset import collate_fn
 
