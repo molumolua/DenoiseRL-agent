@@ -9,7 +9,7 @@ export ALFWORLD_DATA=${ALFWORLD_DATA:-"${LOCAL_DATA_DIR}/alfworld"}
 
 ENGINE=${ENGINE:-vllm}
 MODEL_ROOT=${MODEL_ROOT:-/inspire/hdd/global_user/xucaijun-253108120121/Model}
-MODEL_PATH=${MODEL_PATH:-${MODEL_NAME:-Qwen/Qwen2.5-1.5B-Instruct}}
+MODEL_PATH=${MODEL_PATH:-${MODEL_NAME:-Qwen/Qwen2.5-7B-Instruct}}
 case "${MODEL_PATH}" in
   /*) ;;
   *) MODEL_PATH="${MODEL_ROOT%/}/${MODEL_PATH}" ;;
