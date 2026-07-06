@@ -159,9 +159,8 @@ def filter_group_data(batch_list : List[Dict],
         group_indices = np.arange(i * group_n, (i + 1) * group_n)
         group_rewards = episode_rewards[group_indices]
 
-        # check if all group_traj_uid are the same
-        for index in group_indices:
-            assert batch_list[index][0]['uid'] == batch_list[group_indices[0]][0]['uid']
+        # DAPO filters by the original rollout group. Some recipes may split
+        # advantage uids inside that group, e.g. clean vs denoise rollouts.
 
         # Check if all rewards in the group are the same
         if not np.all(group_rewards == group_rewards[0]):
@@ -182,4 +181,3 @@ def filter_group_data(batch_list : List[Dict],
     tool_callings = tool_callings[keep_indices]
 
     return batch_list, episode_rewards, episode_lengths, success, traj_uid, tool_callings
-

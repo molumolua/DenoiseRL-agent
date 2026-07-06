@@ -11,6 +11,8 @@ This recipe keeps GRPO, DAPO, DenoiseRL, and DenoiseRL+DAPO on one parameter sur
 - Rollout group size: `8`
 - History length: `2`
 - Learning rate: `1e-6`
+- KL loss coefficient: `0.01`
+- PPO mini / micro batch: `256 / 32 per GPU`
 - Eval frequency during training: every 5 epochs (`trainer.test_freq=5`)
 - Validation splits: `seen` and `unseen` by default (`EVAL_SPLIT=both`), logged separately as `val/seen/...` and `val/unseen/...`
 - On-policy: no rollout cache/reuse is introduced; DAPO only oversamples with the current policy before an update. Denoise prefixes are replayed into the environment and prompt history, but PPO loss is only on newly generated policy actions.
@@ -125,26 +127,42 @@ bash recipe/alfworld_denoise/run_dapo_eval.sh
 
 ## DenoiseRL
 
-DenoiseRL mixes `N` clean rollouts and `K` prefix-replay rollouts per task group. Prefixes should be complete ALFWorld action strings, not token fragments. The default is `N=4, K=4`.
+DenoiseRL mixes `N` clean rollouts and `K` online-denoised rollouts per task group. The default is `N=4, K=4`. In the default `full_then_ratio` strategy, the fixed small denoiser first runs a full shadow rollout on each sub-rollout env, then the env is reset to the same ALFWorld gamefile and only the first ratio of denoiser actions is replayed. The solver continues from that partial perturbed state, and PPO trains only on solver-generated actions. Terminal denoiser actions are not replayed by default, so the solver does not inherit an already-failed final state.
 
 ```bash
-PREFIX_POOL_PATH=/path/to/alfworld_prefix_pool.jsonl \
+DENOISE_MODEL_PATH=Qwen/Qwen2.5-0.5B-Instruct \
 bash recipe/alfworld_denoise/run_denoise_grpo_train.sh
 
-PREFIX_POOL_PATH=/path/to/alfworld_prefix_pool.jsonl \
+DENOISE_MODEL_PATH=Qwen/Qwen2.5-0.5B-Instruct \
 bash recipe/alfworld_denoise/run_denoise_dapo_train.sh
 ```
 
-Prefix pool JSONL format:
+Useful online knobs:
 
-```json
-{"success": false, "gamefile": ".../game.tw-pddl", "model": "small-model", "actions": ["look", "go to countertop 1", "take apple 1 from countertop 1"]}
+```bash
+DENOISE_PREFIX_STRATEGY=full_then_ratio
+DENOISE_PREFIX_RATIO=0.3
+DENOISE_PREFIX_CANDIDATES_PER_GROUP=${SUB_ROLLOUT_K}
+DENOISE_PREFIX_SAMPLE_SEED=${SEED:-0}
+DENOISE_FULL_ROLLOUT_MAX_STEPS=${MAX_STEPS}
+DENOISE_AVOID_TERMINAL_PREFIX=True
+DENOISE_PREFIX_MAX_STEPS=null
+DENOISE_PROMPT_LENGTH=${PROMPT_LENGTH}
+DENOISE_RESPONSE_LENGTH=512
+DENOISE_TEMPERATURE=1.0
+DENOISE_TOP_P=1.0
+DENOISE_TOP_K=-1
+DENOISE_DO_SAMPLE=True
+DENOISE_ADVANTAGE_GROUPING=mixed
+DENOISE_TP_SIZE=${TP_SIZE}
+DENOISE_MAX_MODEL_LEN=${MAX_MODEL_LEN}
+DENOISE_MAX_NUM_BATCHED_TOKENS=${MAX_NUM_BATCHED_TOKENS}
+DENOISE_SHARED_GPU_MEMORY_UTILIZATION=0.3
+DENOISE_COLOCATE_GPU_UTIL_CAP=0.9
 ```
 
-You can also use `steps`:
+`MAIN_ROLLOUT_N` controls how many clean solver rollouts run from the initial state. `SUB_ROLLOUT_K` controls how many denoise continuation rollouts the solver runs from perturbed states. `DENOISE_PREFIX_CANDIDATES_PER_GROUP` controls how many small-model error prefixes are generated per task group; each denoise continuation samples one of those prefixes at random before the solver takes over. `DENOISE_PREFIX_RATIO` controls perturbation strength; for example `0.3` replays roughly the first 30% of the selected small-model rollout. `DENOISE_PREFIX_MAX_STEPS` is an optional hard cap on the replayed prefix length; leave it as `null` for pure ratio truncation. `DENOISE_ADVANTAGE_GROUPING=mixed` puts clean and denoise continuations in the same GRPO advantage group; set it to `split` to use separate clean/denoise baselines. Set `DENOISE_PREFIX_STRATEGY=step_budget` and `DENOISE_PREFIX_MAX_STEPS=6` to recover the older online behavior where the denoiser directly advances each sub env for a fixed number of steps.
 
-```json
-{"success": false, "steps": [{"action": "<action>look</action>"}, {"action": "inventory"}]}
-```
+`DENOISE_MODEL_PATH` follows the same relative-path rule as `MODEL_PATH`: relative values resolve under `MODEL_ROOT`. The solver and denoiser share the same Ray GPU pool. In the default shared-vLLM mode, the denoiser initializes first with `DENOISE_SHARED_GPU_MEMORY_UTILIZATION`, and the solver initializes second with `min(2x, DENOISE_COLOCATE_GPU_UTIL_CAP)`, following the shared placement pattern used by `hint_learn_v3`.
 
-`gamefile` is stored for analysis, but this lightweight implementation samples prefixes globally and replays them after the current ALFWorld reset. Because each rollout group uses the same seed/task, clean and denoise rollouts remain comparable inside the group.
+The old JSONL prefix-pool implementation remains available for experiments by setting `env.denoise.mode=prefix_pool` and `env.denoise.prefix_pool_path=...`, but the launch scripts now default to online denoising.

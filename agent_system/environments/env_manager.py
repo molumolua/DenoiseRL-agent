@@ -184,6 +184,93 @@ class AlfWorldEnvironmentManager(EnvironmentManagerBase):
         dones = to_numpy(dones)
 
         return next_observations, rewards, dones, infos
+
+    def step_selected(self, indices: List[int], text_actions: List[str]):
+        """Apply actions to a subset of ALFWorld envs and record them as history."""
+        if not hasattr(self.envs, "step_selected"):
+            raise NotImplementedError("The wrapped ALFWorld envs do not support step_selected().")
+        if len(indices) != len(text_actions):
+            raise ValueError(f"indices/text_actions length mismatch: {len(indices)} vs {len(text_actions)}")
+        if not indices:
+            empty = np.array([], dtype=np.float32)
+            return {'text': [], 'image': None, 'anchor': []}, empty, empty.astype(bool), []
+
+        action_pools = [self.envs.get_admissible_commands[i] for i in indices]
+        actions, valids = self.projection_f(text_actions, action_pools)
+        text_obs, image_obs, rewards, dones, infos = self.envs.step_selected(indices, actions)
+
+        if self.memory.keys is None:
+            self.memory.keys = ["text_obs", "action"]
+        for local_idx, env_idx in enumerate(indices):
+            self.memory._data[env_idx].append(
+                {"text_obs": self.pre_text_obs[env_idx], "action": actions[local_idx]}
+            )
+            self.pre_text_obs[env_idx] = text_obs[local_idx]
+
+        if infos and infos[0].get("extra.gamefile") is None:
+            for local_idx, info in enumerate(infos):
+                info["extra.gamefile"] = self.gamefile[indices[local_idx]]
+
+        for i, info in enumerate(infos):
+            info['is_action_valid'] = to_numpy(valids[i])
+
+        next_observations = {'text': text_obs, 'image': image_obs, 'anchor': text_obs}
+        rewards = to_numpy(rewards)
+        dones = to_numpy(dones)
+
+        return next_observations, rewards, dones, infos
+
+    def reset_selected_with_prefixes(self, indices: List[int], prefix_actions: List[List[str]]):
+        """Reset selected ALFWorld envs to their current gamefiles and replay prefixes."""
+        if not hasattr(self.envs, "reset_selected"):
+            raise NotImplementedError("The wrapped ALFWorld envs do not support reset_selected().")
+        if len(indices) != len(prefix_actions):
+            raise ValueError(f"indices/prefix_actions length mismatch: {len(indices)} vs {len(prefix_actions)}")
+        if not indices:
+            return {
+                'text': self.build_text_obs(self.pre_text_obs, self.envs.get_admissible_commands, init=True),
+                'image': None,
+                'anchor': self.pre_text_obs,
+            }, []
+
+        reset_kwargs = []
+        for env_idx, actions in zip(indices, prefix_actions):
+            gamefile = self.gamefile[env_idx] if env_idx < len(self.gamefile) else None
+            if gamefile is None:
+                raise ValueError(f"Cannot replay denoise prefix for env {env_idx}: missing gamefile.")
+            reset_kwargs.append(
+                {
+                    "gamefile": gamefile,
+                    "trajectory_prefix": {"actions": list(actions)},
+                }
+            )
+
+        text_obs, image_obs, infos = self.envs.reset_selected(indices, reset_kwargs)
+
+        if self.memory.keys is None:
+            self.memory.keys = ["text_obs", "action"]
+        for local_idx, env_idx in enumerate(indices):
+            info = infos[local_idx]
+            self.memory._data[env_idx] = [
+                {"text_obs": step.get("text_obs", ""), "action": step.get("action", "")}
+                for step in (info.get("prefix_history", []) or [])
+                if step.get("action") is not None
+            ]
+            self.pre_text_obs[env_idx] = text_obs[local_idx]
+            if info.get("extra.gamefile") is not None:
+                self.gamefile[env_idx] = info["extra.gamefile"]
+
+        prefix_lens = [len(self.memory._data[i]) for i in range(len(self.pre_text_obs))]
+        full_text_obs = self.build_mixed_text_obs_after_prefix(prefix_lens)
+        return {'text': full_text_obs, 'image': image_obs, 'anchor': self.pre_text_obs}, infos
+
+    def build_mixed_text_obs_after_prefix(self, prefix_lens: List[int]) -> List[str]:
+        init_obs = self.build_text_obs(self.pre_text_obs, self.envs.get_admissible_commands, init=True)
+        history_obs = self.build_text_obs(self.pre_text_obs, self.envs.get_admissible_commands)
+        return [
+            history_obs[i] if int(prefix_lens[i]) > 0 else init_obs[i]
+            for i in range(len(self.pre_text_obs))
+        ]
     
     def extract_task(self, text_obs: List[str]):
         for obs in text_obs:
