@@ -59,8 +59,28 @@ class AlfworldWorker:
     """
     
     def __init__(self, config, seed, base_env):
-        self.env = base_env.init_env(batch_size=1)  # Each worker holds only one sub-environment
-        self.env.seed(seed)
+        self.seed = seed
+        self.base_env = base_env
+        self.default_env = self._make_env()
+        self.env = self.default_env
+
+    def _make_env(self, game_files=None):
+        try:
+            env = self.base_env.init_env(batch_size=1, game_files=game_files)
+        except TypeError as exc:
+            if game_files is not None:
+                raise NotImplementedError(
+                    "Resetting ALFWorld to a specific gamefile is currently supported "
+                    "for AlfredTWEnv only."
+                ) from exc
+            env = self.base_env.init_env(batch_size=1)
+        env.seed(self.seed)
+        return env
+
+    def _close_replay_env(self):
+        if self.env is not self.default_env and hasattr(self.env, "close"):
+            self.env.close()
+        self.env = self.default_env
 
     def _extract_prefix_actions(self, trajectory_prefix):
         if not trajectory_prefix:
@@ -88,8 +108,7 @@ class AlfworldWorker:
         infos['observation_text'] = obs
         return obs, scores, dones, infos
     
-    def reset(self, trajectory_prefix=None):
-        """Reset the environment"""
+    def _reset_current_env(self, trajectory_prefix=None):
         obs, infos = self.env.reset()
         initial_obs = obs[0]
         prefix_history = []
@@ -108,6 +127,15 @@ class AlfworldWorker:
         infos['prefix_len'] = [len(prefix_history)]
         infos['prefix_done'] = [prefix_done]
         return obs, infos
+
+    def reset(self, trajectory_prefix=None, gamefile=None):
+        """Reset the environment, optionally pinning it to a specific gamefile."""
+        if gamefile:
+            self._close_replay_env()
+            self.env = self._make_env(game_files=[gamefile])
+        else:
+            self._close_replay_env()
+        return self._reset_current_env(trajectory_prefix)
     
     def getobs(self):
         """Get current observation image"""
@@ -178,6 +206,70 @@ class AlfworldEnvs(gym.Env):
             image_obs_list = None
 
         return text_obs_list, image_obs_list, rewards_list, dones_list, info_list
+
+    def step_selected(self, indices, actions):
+        if len(indices) != len(actions):
+            raise ValueError(f"indices/actions length mismatch: {len(indices)} vs {len(actions)}")
+        if not indices:
+            return [], None, [], [], []
+
+        futures = []
+        for idx, action in zip(indices, actions):
+            if idx < 0 or idx >= self.active_processes:
+                raise IndexError(f"selected env index {idx} outside active range [0, {self.active_processes})")
+            futures.append(self.workers[idx].step.remote(action))
+
+        text_obs_list = []
+        rewards_list = []
+        dones_list = []
+        info_list = []
+        results = ray.get(futures)
+        for idx, (obs, scores, dones, info) in zip(indices, results):
+            for k in info.keys():
+                info[k] = info[k][0]
+
+            text_obs_list.append(obs[0])
+            dones_list.append(dones[0])
+            info_list.append(info)
+            self.prev_admissible_commands[idx] = info['admissible_commands']
+            rewards_list.append(compute_reward(info, self.multi_modal))
+
+        # Online DenoiseRL currently targets AlfredTWEnv. Keep the return shape
+        # aligned with step(); multimodal selected stepping can be added when needed.
+        image_obs_list = None
+        return text_obs_list, image_obs_list, rewards_list, dones_list, info_list
+
+    def reset_selected(self, indices, kwargs):
+        if len(indices) != len(kwargs):
+            raise ValueError(f"indices/kwargs length mismatch: {len(indices)} vs {len(kwargs)}")
+        if not indices:
+            return [], None, []
+
+        futures = []
+        for idx, item in zip(indices, kwargs):
+            if idx < 0 or idx >= self.active_processes:
+                raise IndexError(f"selected env index {idx} outside active range [0, {self.active_processes})")
+            item = item or {}
+            trajectory_prefix = (
+                item.get("trajectory_prefix")
+                or item.get("prefix_actions")
+                or item.get("prefix_steps")
+            )
+            gamefile = item.get("gamefile") or item.get("extra.gamefile")
+            futures.append(self.workers[idx].reset.remote(trajectory_prefix, gamefile))
+
+        text_obs_list = []
+        info_list = []
+        results = ray.get(futures)
+        for idx, (obs, info) in zip(indices, results):
+            for k in info.keys():
+                info[k] = info[k][0]
+            text_obs_list.append(obs[0])
+            self.prev_admissible_commands[idx] = info['admissible_commands']
+            info_list.append(info)
+
+        image_obs_list = None
+        return text_obs_list, image_obs_list, info_list
 
     def _normalize_reset_kwargs(self, kwargs):
         if kwargs is None:

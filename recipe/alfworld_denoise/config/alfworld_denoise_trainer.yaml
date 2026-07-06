@@ -33,13 +33,41 @@ env:
     n: 8
   denoise:
     enable: True
+    mode: online
     main_rollout_n: 4
     sub_rollout_k: 4
+    # mixed: clean and denoise rollouts share one GRPO advantage group.
+    # split: clean and denoise rollouts use separate advantage groups.
+    advantage_grouping: mixed
+    # Legacy offline replay mode. Only used when env.denoise.mode=prefix_pool.
     prefix_pool_path: null
     min_prefix_steps: 1
     max_prefix_steps: 6
     prefix_seed: ${env.seed}
     require_failed_prefixes: True
+    online:
+      model_path: null
+      prefix_strategy: full_then_ratio
+      prefix_ratio: 0.3
+      prefix_candidates_per_group: ${env.denoise.sub_rollout_k}
+      prefix_sample_seed: ${env.seed}
+      full_rollout_max_steps: ${env.max_steps}
+      avoid_terminal_prefix: True
+      # Optional cap on the replayed prefix length. Leave null for pure ratio truncation.
+      max_prefix_steps: null
+      prompt_length: ${data.max_prompt_length}
+      response_length: 512
+      temperature: 1.0
+      top_p: 1.0
+      top_k: -1
+      do_sample: True
+      tensor_model_parallel_size: ${actor_rollout_ref.rollout.tensor_model_parallel_size}
+      max_model_len: ${actor_rollout_ref.rollout.max_model_len}
+      max_num_batched_tokens: ${actor_rollout_ref.rollout.max_num_batched_tokens}
+      # Shared mode follows hint_learn_v3: the denoiser initializes first with
+      # this value, and the solver initializes second with min(2x, cap).
+      shared_gpu_memory_utilization: 0.3
+      colocate_gpu_util_cap: 0.9
 
 algorithm:
   adv_estimator: grpo
