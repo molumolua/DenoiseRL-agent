@@ -405,10 +405,8 @@ class DenoiseTrajectoryCollector(TrajectoryCollector):
         self._ensure_online_ready()
         if isinstance(reset_kwargs, np.ndarray):
             reset_kwargs = reset_kwargs.tolist()
-        sub_indices = [
-            i for i, item in enumerate(reset_kwargs or [])
-            if isinstance(item, dict) and bool(item.get("denoise_is_sub", False))
-        ]
+        sub_groups = self._sub_indices_by_group(reset_kwargs or [])
+        sub_indices = [idx for group in sub_groups for idx in group]
         prefix_lens = np.zeros(len(gen_batch.batch), dtype=np.int32)
         if not sub_indices:
             return obs, prefix_lens
