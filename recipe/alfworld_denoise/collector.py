@@ -331,6 +331,23 @@ class DenoiseTrajectoryCollector(TrajectoryCollector):
             )
         return groups
 
+    @staticmethod
+    def _is_denoise_sub(item) -> bool:
+        return isinstance(item, dict) and bool(item.get("denoise_is_sub", False))
+
+    def _update_prefix_metadata(self, reset_kwargs, prefix_lens: np.ndarray, source: str) -> None:
+        if reset_kwargs is None:
+            return
+        if isinstance(reset_kwargs, np.ndarray):
+            reset_kwargs = reset_kwargs.tolist()
+        for i, length in enumerate(prefix_lens):
+            if i >= len(reset_kwargs):
+                break
+            item = reset_kwargs[i]
+            if self._is_denoise_sub(item):
+                item["denoise_prefix_len"] = int(length)
+                item["denoise_prefix_source"] = source
+
     def _build_uid_batch(self, batch_size: int, reset_kwargs) -> np.ndarray:
         total_n = int(self.config.env.rollout.n)
         if total_n <= 0:
@@ -338,7 +355,6 @@ class DenoiseTrajectoryCollector(TrajectoryCollector):
             return np.array([uid for _ in range(batch_size)], dtype=object)
         if (
             self.enabled
-            and self.mode == "online"
             and self.advantage_grouping == "split"
             and reset_kwargs is not None
         ):
@@ -369,8 +385,13 @@ class DenoiseTrajectoryCollector(TrajectoryCollector):
         prefix_lens = np.zeros(len(gen_batch.batch), dtype=np.int32)
         if not sub_indices:
             return obs, prefix_lens
+        if not hasattr(envs, "reset_selected_with_prefixes"):
+            raise NotImplementedError("step_budget online DenoiseRL requires AlfWorldEnvironmentManager.")
 
         current_obs = obs
+        generated_lens = np.zeros(len(gen_batch.batch), dtype=np.int32)
+        prefix_actions = {idx: [] for idx in sub_indices}
+        prefix_dones = {idx: False for idx in sub_indices}
         done_prefix = set()
         invalid_actions = 0
         total_actions = 0
@@ -381,25 +402,45 @@ class DenoiseTrajectoryCollector(TrajectoryCollector):
 
             text_actions = self._generate_denoise_actions(gen_batch, current_obs, active_indices)
             _next_obs, _rewards, dones, infos = envs.step_selected(active_indices, text_actions)
-            prefix_lens[active_indices] += 1
             total_actions += len(active_indices)
             invalid_actions += sum(1 for info in infos if not bool(info.get("is_action_valid", True)))
-            for env_idx, done in zip(active_indices, dones):
+            for local_idx, env_idx in enumerate(active_indices):
+                projected_action = text_actions[local_idx]
+                if hasattr(envs, "memory") and envs.memory._data[env_idx]:
+                    projected_action = envs.memory._data[env_idx][-1]["action"]
+                prefix_actions[env_idx].append(projected_action)
+                generated_lens[env_idx] = len(prefix_actions[env_idx])
+                done = dones[local_idx]
                 if bool(done):
+                    prefix_dones[env_idx] = True
                     done_prefix.add(env_idx)
 
-            current_obs = self._current_obs_from_envs(envs, prefix_lens)
+            current_obs = self._current_obs_from_envs(envs, generated_lens)
+
+        replay_actions = []
+        terminal_steps_dropped = 0
+        for env_idx in sub_indices:
+            actions = prefix_actions[env_idx]
+            replay_len = len(actions)
+            if self.online_avoid_terminal_prefix and prefix_dones[env_idx] and replay_len > 0:
+                replay_len -= 1
+                terminal_steps_dropped += 1
+            replay_prefix = actions[:replay_len]
+            replay_actions.append(replay_prefix)
+            prefix_lens[env_idx] = len(replay_prefix)
+
+        replay_obs, _replay_infos = envs.reset_selected_with_prefixes(sub_indices, replay_actions)
 
         if total_actions:
             print(
-                "Online DenoiseRL replayed "
-                f"{int(prefix_lens.sum())} denoiser action(s); "
+                "Online DenoiseRL step_budget generated "
+                f"{int(generated_lens.sum())} denoiser action(s); "
+                f"replayed={int(prefix_lens.sum())}; "
+                f"terminal_prefix_dropped={terminal_steps_dropped}; "
                 f"invalid={invalid_actions}/{total_actions}."
             )
-        for i, length in enumerate(prefix_lens):
-            if length and isinstance(reset_kwargs[i], dict):
-                reset_kwargs[i]["denoise_prefix_len"] = int(length)
-        return current_obs, prefix_lens
+        self._update_prefix_metadata(reset_kwargs, prefix_lens, "online_step_budget")
+        return replay_obs, prefix_lens
 
     def _run_full_then_ratio_prefixes(self, gen_batch: DataProto, obs: dict, envs, reset_kwargs) -> tuple[dict, np.ndarray]:
         self._ensure_online_ready()
@@ -494,10 +535,7 @@ class DenoiseTrajectoryCollector(TrajectoryCollector):
                 f"invalid={invalid_actions}/{total_actions}; "
                 f"won={sum(1 for idx in candidate_indices if full_wons[idx])}/{len(candidate_indices)}."
             )
-        for i, length in enumerate(prefix_lens):
-            if isinstance(reset_kwargs[i], dict):
-                reset_kwargs[i]["denoise_prefix_len"] = int(length)
-                reset_kwargs[i]["denoise_prefix_source"] = "online_full_then_ratio"
+        self._update_prefix_metadata(reset_kwargs, prefix_lens, "online_full_then_ratio")
         return replay_obs, prefix_lens
 
     def _run_online_prefixes(self, gen_batch: DataProto, obs: dict, envs, reset_kwargs) -> tuple[dict, np.ndarray]:

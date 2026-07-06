@@ -18,8 +18,20 @@ def _cfg_get(cfg, key, default=None):
     return cfg.get(key, default)
 
 
+def _is_null(value):
+    return value is None or str(value).strip().lower() in {"", "none", "null"}
+
+
+def _as_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value).strip().lower() not in {"", "0", "false", "no", "off", "none", "null"}
+
+
 class OnlineDenoisePPOTrainer(RayPPOTrainer):
-    """PPO trainer that colocates a fixed denoiser rollout model with the solver."""
+    """PPO trainer that shares a fixed denoiser rollout model with the solver."""
 
     def _online_cfg(self):
         denoise_cfg = self.config.env.get("denoise", {})
@@ -57,10 +69,6 @@ class OnlineDenoisePPOTrainer(RayPPOTrainer):
                 if value is not None:
                     setattr(denoise_cfg.rollout, rollout_key, value)
 
-            gpu_util = _cfg_get(online_cfg, "gpu_memory_utilization", None)
-            if gpu_util is not None:
-                denoise_cfg.rollout.gpu_memory_utilization = float(gpu_util)
-
             # The denoiser is inference-only. It is started with role="rollout",
             # so these actor knobs are only defensive if a backend inspects them.
             denoise_cfg.actor.fsdp_config.optimizer_offload = True
@@ -68,23 +76,82 @@ class OnlineDenoisePPOTrainer(RayPPOTrainer):
 
         return denoise_cfg
 
-    def _apply_shared_gpu_utilization(self, solver_cfg, denoise_cfg):
+    def _apply_colocated_gpu_utilization(self, solver_cfg, denoise_cfg):
         online_cfg = self._online_cfg()
-        shared_util = _cfg_get(online_cfg, "shared_gpu_memory_utilization", None)
-        if shared_util is None or str(shared_util).lower() in {"", "none", "null"}:
-            return
+        denoiser_util = _cfg_get(online_cfg, "denoiser_gpu_memory_utilization", None)
+        solver_util = _cfg_get(online_cfg, "solver_gpu_memory_utilization", None)
 
-        base_util = float(shared_util)
-        cap = float(_cfg_get(online_cfg, "colocate_gpu_util_cap", 0.9))
-        with open_dict(denoise_cfg):
-            denoise_cfg.rollout.gpu_memory_utilization = base_util
-        with open_dict(solver_cfg):
-            solver_cfg.rollout.gpu_memory_utilization = min(2.0 * base_util, cap)
+        if not _is_null(denoiser_util) or not _is_null(solver_util):
+            if not _is_null(denoiser_util):
+                with open_dict(denoise_cfg):
+                    denoise_cfg.rollout.gpu_memory_utilization = float(denoiser_util)
+            if not _is_null(solver_util):
+                with open_dict(solver_cfg):
+                    solver_cfg.rollout.gpu_memory_utilization = float(solver_util)
+            mode = "explicit"
+        else:
+            shared_util = _cfg_get(online_cfg, "shared_gpu_memory_utilization", None)
+            if not _is_null(shared_util):
+                base_util = float(shared_util)
+                cap = float(_cfg_get(online_cfg, "colocate_gpu_util_cap", 0.9))
+                with open_dict(denoise_cfg):
+                    denoise_cfg.rollout.gpu_memory_utilization = base_util
+                with open_dict(solver_cfg):
+                    solver_cfg.rollout.gpu_memory_utilization = min(2.0 * base_util, cap)
+                mode = "legacy-shared"
+            else:
+                legacy_util = _cfg_get(online_cfg, "gpu_memory_utilization", None)
+                if _is_null(legacy_util):
+                    return
+                with open_dict(denoise_cfg):
+                    denoise_cfg.rollout.gpu_memory_utilization = float(legacy_util)
+                mode = "legacy-denoiser-only"
+
         print(
-            "[online-denoise] colocated vLLM gpu_memory_utilization: "
-            f"denoiser(1st)={denoise_cfg.rollout.gpu_memory_utilization:.3f}, "
-            f"solver(2nd,cumulative)={solver_cfg.rollout.gpu_memory_utilization:.3f}."
+            "[online-denoise] vLLM gpu_memory_utilization "
+            f"({mode}): denoiser={denoise_cfg.rollout.gpu_memory_utilization:.3f}, "
+            f"solver={solver_cfg.rollout.gpu_memory_utilization:.3f}."
         )
+
+    def _separate_denoise_process(self) -> bool:
+        return _as_bool(_cfg_get(self._online_cfg(), "separate_denoise_process", True))
+
+    def _add_optional_worker_classes(self, pool_to_cls, solver_cfg):
+        if self.use_critic:
+            critic_pool = self.resource_pool_manager.get_resource_pool(Role.Critic)
+            pool_to_cls.setdefault(critic_pool, {})["critic"] = RayClassWithInitArgs(
+                cls=self.role_worker_mapping[Role.Critic],
+                config=self.config.critic,
+            )
+
+        if self.use_reference_policy:
+            ref_pool = self.resource_pool_manager.get_resource_pool(Role.RefPolicy)
+            pool_to_cls.setdefault(ref_pool, {})["ref"] = RayClassWithInitArgs(
+                self.role_worker_mapping[Role.RefPolicy],
+                config=solver_cfg,
+                role="ref",
+            )
+
+        if self.use_rm:
+            rm_pool = self.resource_pool_manager.get_resource_pool(Role.RewardModel)
+            pool_to_cls.setdefault(rm_pool, {})["rm"] = RayClassWithInitArgs(
+                self.role_worker_mapping[Role.RewardModel],
+                config=self.config.reward_model,
+            )
+
+    def _spawn_worker_groups(self, pool_class_groups, wg_kwargs):
+        all_wg = {}
+        for pool, class_dict in pool_class_groups:
+            if not class_dict:
+                continue
+            worker_dict_cls = create_colocated_worker_cls(class_dict=class_dict)
+            wg_dict = self.ray_worker_group_cls(
+                resource_pool=pool,
+                ray_cls_with_init=worker_dict_cls,
+                **wg_kwargs,
+            )
+            all_wg.update(wg_dict.spawn(prefix_set=class_dict.keys()))
+        return all_wg
 
     def init_workers(self):
         self.resource_pool_manager.create_resource_pool()
@@ -97,56 +164,50 @@ class OnlineDenoisePPOTrainer(RayPPOTrainer):
         actor_cls = self.role_worker_mapping[Role.ActorRollout]
         solver_cfg = copy.deepcopy(self.config.actor_rollout_ref)
         denoise_cfg = self._build_denoise_actor_rollout_cfg()
-        self._apply_shared_gpu_utilization(solver_cfg, denoise_cfg)
+        self._apply_colocated_gpu_utilization(solver_cfg, denoise_cfg)
 
-        # Insert the denoiser before the solver and initialize in that order, matching
-        # the shared-vLLM memory accounting pattern used by hint_learn_v3.
-        self.resource_pool_to_cls[resource_pool][DENOISE_ROLLOUT] = RayClassWithInitArgs(
-            cls=actor_cls,
-            config=denoise_cfg,
-            role="rollout",
-        )
+        separate_denoise_process = self._separate_denoise_process()
+        if separate_denoise_process:
+            # Keep the denoiser on the same placement group/GPU as the solver, but
+            # in a separate Ray process. vLLM sleep mode only allows one sleep-mode
+            # engine instance per process.
+            resource_pool.max_colocate_count = max(resource_pool.max_colocate_count, 2)
+
         self.resource_pool_to_cls[resource_pool][SOLVER_ROLLOUT] = RayClassWithInitArgs(
             cls=actor_cls,
             config=solver_cfg,
             role="actor_rollout",
         )
+        self._add_optional_worker_classes(self.resource_pool_to_cls, solver_cfg)
 
-        if self.use_critic:
-            critic_pool = self.resource_pool_manager.get_resource_pool(Role.Critic)
-            self.resource_pool_to_cls[critic_pool]["critic"] = RayClassWithInitArgs(
-                cls=self.role_worker_mapping[Role.Critic],
-                config=self.config.critic,
+        pool_class_groups = []
+        if separate_denoise_process:
+            pool_class_groups.append(
+                (
+                    resource_pool,
+                    {
+                        DENOISE_ROLLOUT: RayClassWithInitArgs(
+                            cls=actor_cls,
+                            config=denoise_cfg,
+                            role="rollout",
+                        )
+                    },
+                )
+            )
+        else:
+            self.resource_pool_to_cls[resource_pool][DENOISE_ROLLOUT] = RayClassWithInitArgs(
+                cls=actor_cls,
+                config=denoise_cfg,
+                role="rollout",
             )
 
-        if self.use_reference_policy:
-            ref_pool = self.resource_pool_manager.get_resource_pool(Role.RefPolicy)
-            self.resource_pool_to_cls[ref_pool]["ref"] = RayClassWithInitArgs(
-                self.role_worker_mapping[Role.RefPolicy],
-                config=solver_cfg,
-                role="ref",
-            )
+        pool_class_groups.extend(self.resource_pool_to_cls.items())
 
-        if self.use_rm:
-            rm_pool = self.resource_pool_manager.get_resource_pool(Role.RewardModel)
-            self.resource_pool_to_cls[rm_pool]["rm"] = RayClassWithInitArgs(
-                self.role_worker_mapping[Role.RewardModel],
-                config=self.config.reward_model,
-            )
-
-        all_wg = {}
         wg_kwargs = {"device_name": self.device_name}
         if OmegaConf.select(self.config.trainer, "ray_wait_register_center_timeout") is not None:
             wg_kwargs["ray_wait_register_center_timeout"] = self.config.trainer.ray_wait_register_center_timeout
 
-        for pool, class_dict in self.resource_pool_to_cls.items():
-            worker_dict_cls = create_colocated_worker_cls(class_dict=class_dict)
-            wg_dict = self.ray_worker_group_cls(
-                resource_pool=pool,
-                ray_cls_with_init=worker_dict_cls,
-                **wg_kwargs,
-            )
-            all_wg.update(wg_dict.spawn(prefix_set=class_dict.keys()))
+        all_wg = self._spawn_worker_groups(pool_class_groups, wg_kwargs)
 
         if self.use_critic:
             self.critic_wg = all_wg["critic"]

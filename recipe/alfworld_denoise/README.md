@@ -133,6 +133,8 @@ bash recipe/alfworld_denoise/run_dapo_eval.sh
 
 DenoiseRL mixes `N` clean rollouts and `K` online-denoised rollouts per task group. The default is `N=4, K=4`. In the default `full_then_ratio` strategy, the fixed small denoiser first runs a full shadow rollout on each sub-rollout env, then the env is reset to the same ALFWorld gamefile and only the first ratio of denoiser actions is replayed. The solver continues from that partial perturbed state, and PPO trains only on solver-generated actions. Terminal denoiser actions are not replayed by default, so the solver does not inherit an already-failed final state.
 
+`episode_rewards` and `episode_lengths` report only solver-generated actions. Denoiser prefix actions are replayed into the environment and prompt history, but their rewards and lengths are intentionally excluded from PPO episode scoring. The prefix still consumes ALFWorld's internal environment step budget, so a denoise continuation may hit the environment limit after fewer solver actions than a clean rollout.
+
 ```bash
 bash recipe/alfworld_denoise/run_denoise_grpo_train.sh
 
@@ -160,12 +162,15 @@ DENOISE_ADVANTAGE_GROUPING=mixed
 DENOISE_TP_SIZE=${TP_SIZE}
 DENOISE_MAX_MODEL_LEN=${MAX_MODEL_LEN}
 DENOISE_MAX_NUM_BATCHED_TOKENS=${MAX_NUM_BATCHED_TOKENS}
-DENOISE_SHARED_GPU_MEMORY_UTILIZATION=0.3
+DENOISE_DENOISER_GPU_MEMORY_UTILIZATION=0.2
+DENOISE_SOLVER_GPU_MEMORY_UTILIZATION=0.5
+DENOISE_SHARED_GPU_MEMORY_UTILIZATION=null
 DENOISE_COLOCATE_GPU_UTIL_CAP=0.9
+DENOISE_SEPARATE_PROCESS=True
 ```
 
-`MAIN_ROLLOUT_N` controls how many clean solver rollouts run from the initial state. `SUB_ROLLOUT_K` controls how many denoise continuation rollouts the solver runs from perturbed states. `DENOISE_PREFIX_CANDIDATES_PER_GROUP` controls how many small-model error prefixes are generated per task group; each denoise continuation samples one of those prefixes at random before the solver takes over. `DENOISE_PREFIX_RATIO` controls perturbation strength; for example `0.3` replays roughly the first 30% of the selected small-model rollout. `DENOISE_PREFIX_MAX_STEPS` is an optional hard cap on the replayed prefix length; leave it as `null` for pure ratio truncation. `DENOISE_ADVANTAGE_GROUPING=mixed` puts clean and denoise continuations in the same GRPO advantage group; set it to `split` to use separate clean/denoise baselines. Set `DENOISE_PREFIX_STRATEGY=step_budget` and `DENOISE_PREFIX_MAX_STEPS=6` to recover the older online behavior where the denoiser directly advances each sub env for a fixed number of steps.
+`MAIN_ROLLOUT_N` controls how many clean solver rollouts run from the initial state. `SUB_ROLLOUT_K` controls how many denoise continuation rollouts the solver runs from perturbed states. `DENOISE_PREFIX_CANDIDATES_PER_GROUP` controls how many small-model error prefixes are generated per task group; each denoise continuation samples one of those prefixes at random before the solver takes over. `DENOISE_PREFIX_RATIO` controls perturbation strength; for example `0.3` replays roughly the first 30% of the selected small-model rollout. `DENOISE_PREFIX_MAX_STEPS` is an optional hard cap on the replayed prefix length; leave it as `null` for pure ratio truncation. `DENOISE_ADVANTAGE_GROUPING=mixed` puts clean and denoise continuations in the same GRPO advantage group; set it to `split` to use separate clean/denoise baselines. Set `DENOISE_PREFIX_STRATEGY=step_budget` and `DENOISE_PREFIX_MAX_STEPS=6` to generate up to a fixed number of denoiser prefix steps for each sub env, then reset and replay the non-terminal prefix before the solver takes over.
 
-`DENOISE_MODEL_PATH` follows the same relative-path rule as `MODEL_PATH`: relative values resolve under `MODEL_ROOT`. The solver and denoiser share the same Ray GPU pool. In the default shared-vLLM mode, the denoiser initializes first with `DENOISE_SHARED_GPU_MEMORY_UTILIZATION`, and the solver initializes second with `min(2x, DENOISE_COLOCATE_GPU_UTIL_CAP)`, following the shared placement pattern used by `hint_learn_v3`.
+`DENOISE_MODEL_PATH` follows the same relative-path rule as `MODEL_PATH`: relative values resolve under `MODEL_ROOT`. The solver and denoiser share the same Ray GPU pool, but by default they run in separate Ray processes so each process owns only one vLLM sleep-mode engine. The default vLLM memory fractions are `0.2` for the denoiser and `0.5` for the solver. The older shared mode remains available by setting both explicit values to `null` and setting `DENOISE_SHARED_GPU_MEMORY_UTILIZATION`; then the solver uses `min(2x, DENOISE_COLOCATE_GPU_UTIL_CAP)`.
 
 The old JSONL prefix-pool implementation remains available for experiments by setting `env.denoise.mode=prefix_pool` and `env.denoise.prefix_pool_path=...`, but the launch scripts now default to online denoising.

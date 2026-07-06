@@ -10,6 +10,14 @@ MAIN_ROLLOUT_N=${MAIN_ROLLOUT_N:-6}
 SUB_ROLLOUT_K=${SUB_ROLLOUT_K:-2}
 GROUP_SIZE=$((MAIN_ROLLOUT_N + SUB_ROLLOUT_K))
 N_GPUS_PER_NODE=${N_GPUS_PER_NODE:-8}
+
+# GPU memory budget for this recipe only. We intentionally do NOT edit
+# params.sh (where GPU_MEMORY_UTILIZATION defaults to 0.6) so other recipes
+# that source it keep their behavior. Pre-setting here before `source` makes
+# params.sh's `${GPU_MEMORY_UTILIZATION:-0.6}` leave our value untouched.
+#   solver  (main rollout model):  0.5
+#   denoiser (small online model): 0.2
+GPU_MEMORY_UTILIZATION=${GPU_MEMORY_UTILIZATION:-0.5}
 source "${SCRIPT_DIR}/params.sh"
 
 DENOISE_MODEL_PATH=${DENOISE_MODEL_PATH:-Qwen/Qwen2.5-1.5B-Instruct}
@@ -29,8 +37,18 @@ DENOISE_DO_SAMPLE=${DENOISE_DO_SAMPLE:-True}
 DENOISE_TP_SIZE=${DENOISE_TP_SIZE:-${TP_SIZE}}
 DENOISE_MAX_MODEL_LEN=${DENOISE_MAX_MODEL_LEN:-${MAX_MODEL_LEN}}
 DENOISE_MAX_NUM_BATCHED_TOKENS=${DENOISE_MAX_NUM_BATCHED_TOKENS:-${MAX_NUM_BATCHED_TOKENS}}
-DENOISE_SHARED_GPU_MEMORY_UTILIZATION=${DENOISE_SHARED_GPU_MEMORY_UTILIZATION:-0.3}
+if [ -n "${DENOISE_SHARED_GPU_MEMORY_UTILIZATION+x}" ] && \
+   [ -z "${DENOISE_DENOISER_GPU_MEMORY_UTILIZATION+x}" ] && \
+   [ -z "${DENOISE_SOLVER_GPU_MEMORY_UTILIZATION+x}" ]; then
+  DENOISE_DENOISER_GPU_MEMORY_UTILIZATION=null
+  DENOISE_SOLVER_GPU_MEMORY_UTILIZATION=null
+else
+  DENOISE_DENOISER_GPU_MEMORY_UTILIZATION=${DENOISE_DENOISER_GPU_MEMORY_UTILIZATION:-0.2}
+  DENOISE_SOLVER_GPU_MEMORY_UTILIZATION=${DENOISE_SOLVER_GPU_MEMORY_UTILIZATION:-0.5}
+fi
+DENOISE_SHARED_GPU_MEMORY_UTILIZATION=${DENOISE_SHARED_GPU_MEMORY_UTILIZATION:-null}
 DENOISE_COLOCATE_GPU_UTIL_CAP=${DENOISE_COLOCATE_GPU_UTIL_CAP:-0.9}
+DENOISE_SEPARATE_PROCESS=${DENOISE_SEPARATE_PROCESS:-True}
 DENOISE_ADVANTAGE_GROUPING=${DENOISE_ADVANTAGE_GROUPING:-mixed}
 
 if [ -z "$DENOISE_MODEL_PATH" ]; then
@@ -73,7 +91,11 @@ python3 -m recipe.alfworld_denoise.main_online_denoise \
   "env.denoise.online.tensor_model_parallel_size=${DENOISE_TP_SIZE}" \
   "env.denoise.online.max_model_len=${DENOISE_MAX_MODEL_LEN}" \
   "env.denoise.online.max_num_batched_tokens=${DENOISE_MAX_NUM_BATCHED_TOKENS}" \
+  "env.denoise.online.denoiser_gpu_memory_utilization=${DENOISE_DENOISER_GPU_MEMORY_UTILIZATION}" \
+  "env.denoise.online.solver_gpu_memory_utilization=${DENOISE_SOLVER_GPU_MEMORY_UTILIZATION}" \
   "env.denoise.online.shared_gpu_memory_utilization=${DENOISE_SHARED_GPU_MEMORY_UTILIZATION}" \
   "env.denoise.online.colocate_gpu_util_cap=${DENOISE_COLOCATE_GPU_UTIL_CAP}" \
+  "env.denoise.online.separate_denoise_process=${DENOISE_SEPARATE_PROCESS}" \
+  "trainer.val_before_train=False" \
   "trainer.experiment_name=${EXPERIMENT_NAME:-denoise_grpo_qwen2.5_7b_1.5b_unified}" \
   "$@"

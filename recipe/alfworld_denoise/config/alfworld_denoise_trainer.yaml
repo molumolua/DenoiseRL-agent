@@ -64,10 +64,16 @@ env:
       tensor_model_parallel_size: ${actor_rollout_ref.rollout.tensor_model_parallel_size}
       max_model_len: ${actor_rollout_ref.rollout.max_model_len}
       max_num_batched_tokens: ${actor_rollout_ref.rollout.max_num_batched_tokens}
-      # Shared mode follows hint_learn_v3: the denoiser initializes first with
-      # this value, and the solver initializes second with min(2x, cap).
-      shared_gpu_memory_utilization: 0.3
+      # vLLM memory fractions for the two colocated rollout engines.
+      denoiser_gpu_memory_utilization: 0.2
+      solver_gpu_memory_utilization: 0.5
+      # Legacy shared mode: when the explicit values above are null, the denoiser
+      # uses this value and the solver uses min(2x, cap).
+      shared_gpu_memory_utilization: null
       colocate_gpu_util_cap: 0.9
+      # Keep the two vLLM sleep-mode engines on the same GPU pool but in separate
+      # Ray processes. vLLM sleep mode allows only one engine instance per process.
+      separate_denoise_process: True
 
 algorithm:
   adv_estimator: grpo
