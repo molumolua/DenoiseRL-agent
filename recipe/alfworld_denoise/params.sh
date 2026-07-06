@@ -190,7 +190,7 @@ ALFWORLD_COMMON_ARGS=(
   "trainer.save_freq=${SAVE_FREQ}"
   "trainer.test_freq=${TEST_FREQ}"
   "trainer.total_epochs=${TOTAL_EPOCHS}"
-  "trainer.val_before_train=True"
+  "trainer.val_before_train=False"
 )
 
 # Optional per-step prompt/response dumps. Only forwarded when set, so empty
