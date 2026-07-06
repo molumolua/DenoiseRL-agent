@@ -564,7 +564,7 @@ class RayPPOTrainer:
 
         # check eval config
         if config.actor_rollout_ref.rollout.val_kwargs.do_sample:
-            assert config.actor_rollout_ref.rollout.temperature > 0, "validation gen temperature should be greater than 0 when enabling do_sample"
+            assert config.actor_rollout_ref.rollout.val_kwargs.temperature > 0, "validation gen temperature should be greater than 0 when enabling do_sample"
 
         # check multi_turn with tool config
         if config.actor_rollout_ref.rollout.multi_turn.enable:
@@ -686,12 +686,43 @@ class RayPPOTrainer:
         # Log to each configured logger
         self.validation_generations_logger.log(self.config.trainer.logger, samples, self.global_steps)
 
+    def _validation_env_batch_size(self, val_envs):
+        envs = getattr(val_envs, "envs", None)
+        return getattr(envs, "num_processes", None)
+
+    def _validation_sample_limit(self, val_envs):
+        envs = getattr(val_envs, "envs", None)
+        return getattr(envs, "num_games", None)
+
     def _validate(self):
+        if isinstance(self.val_envs, dict):
+            metric_dict = {}
+            for split_name, val_envs in self.val_envs.items():
+                split_metrics = self._validate_single(val_envs=val_envs, split_name=split_name)
+                for key, value in split_metrics.items():
+                    if key.startswith("val/"):
+                        metric_dict[key.replace("val/", f"val/{split_name}/", 1)] = value
+                    else:
+                        metric_dict[f"val/{split_name}/{key}"] = value
+            return metric_dict
+
+        return self._validate_single(val_envs=self.val_envs)
+
+    def _validate_single(self, val_envs, split_name=None):
         reward_tensor_lst = []
         data_source_lst = []
         tool_calling_list = []
         traj_uid_list = []
         success_rate_dict = {}
+        processed_samples = 0
+        sample_limit = self._validation_sample_limit(val_envs)
+        max_env_batch_size = self._validation_env_batch_size(val_envs)
+        val_n = int(self.config.actor_rollout_ref.rollout.val_kwargs.n)
+        max_prompt_batch_size = None
+        if max_env_batch_size is not None:
+            max_prompt_batch_size = max_env_batch_size // max(val_n, 1)
+            if max_prompt_batch_size < 1:
+                raise ValueError(f"Validation env batch size ({max_env_batch_size}) is smaller than val n ({val_n}).")
 
         # Lists to collect samples for the table
         sample_inputs = []
@@ -699,119 +730,164 @@ class RayPPOTrainer:
         sample_scores = []
 
         for test_data in self.val_dataloader:
-            test_batch = DataProto.from_single_dict(test_data)
+            full_test_batch = DataProto.from_single_dict(test_data)
+            batch_start = 0
 
-            # repeat test batch
-            test_batch = test_batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.val_kwargs.n, interleave=True)
+            while batch_start < len(full_test_batch):
+                remaining_batch = len(full_test_batch) - batch_start
+                if sample_limit is not None:
+                    remaining_limit = sample_limit - processed_samples
+                    if remaining_limit <= 0:
+                        break
+                    remaining_batch = min(remaining_batch, remaining_limit)
+                if max_prompt_batch_size is not None:
+                    remaining_batch = min(remaining_batch, max_prompt_batch_size)
+                if remaining_batch <= 0:
+                    break
 
-            # we only do validation on rule-based rm
-            if self.config.reward_model.enable and test_batch[0].non_tensor_batch["reward_model"]["style"] == "model":
-                return {}
+                test_batch = full_test_batch[batch_start:batch_start + remaining_batch]
+                batch_start += remaining_batch
+                processed_samples += len(test_batch)
 
-            # Store original inputs
-            input_ids = test_batch.batch["input_ids"]
-            # TODO: Can we keep special tokens except for padding tokens?
-            input_texts = [self.tokenizer.decode(ids, skip_special_tokens=True) for ids in input_ids]
-            sample_inputs.extend(input_texts)
+                # repeat test batch
+                test_batch = test_batch.repeat(repeat_times=val_n, interleave=True)
 
-            batch_keys_to_pop = ["input_ids", "attention_mask", "position_ids"]
-            non_tensor_batch_keys_to_pop = ["raw_prompt_ids", "data_source"]
-            if "multi_modal_data" in test_batch.non_tensor_batch:
-                non_tensor_batch_keys_to_pop.append("multi_modal_data")
-            if "raw_prompt" in test_batch.non_tensor_batch:
-                non_tensor_batch_keys_to_pop.append("raw_prompt")
-            if "tools_kwargs" in test_batch.non_tensor_batch:
-                non_tensor_batch_keys_to_pop.append("tools_kwargs")
-            if "env_kwargs" in test_batch.non_tensor_batch:
-                non_tensor_batch_keys_to_pop.append("env_kwargs")
-            test_gen_batch = test_batch.pop(
-                batch_keys=batch_keys_to_pop,
-                non_tensor_batch_keys=non_tensor_batch_keys_to_pop,
-            )
+                # we only do validation on rule-based rm
+                if self.config.reward_model.enable and test_batch[0].non_tensor_batch["reward_model"]["style"] == "model":
+                    return {}
 
-            test_gen_batch.meta_info = {
-                "eos_token_id": self.tokenizer.eos_token_id,
-                "pad_token_id": self.tokenizer.pad_token_id,
-                "recompute_log_prob": False,
-                "do_sample": self.config.actor_rollout_ref.rollout.val_kwargs.do_sample,
-                "validate": True,
-            }
-            print(f"test_gen_batch meta info: {test_gen_batch.meta_info}")
+                # Store original inputs
+                input_ids = test_batch.batch["input_ids"]
+                # TODO: Can we keep special tokens except for padding tokens?
+                input_texts = [self.tokenizer.decode(ids, skip_special_tokens=True) for ids in input_ids]
+                sample_inputs.extend(input_texts)
 
-            # # pad to be divisible by dp_size
-            # test_gen_batch_padded, pad_size = pad_dataproto_to_divisor(test_gen_batch, self.actor_rollout_wg.world_size)
-            # test_output_gen_batch_padded = self.actor_rollout_wg.generate_sequences(test_gen_batch_padded)
+                batch_keys_to_pop = ["input_ids", "attention_mask", "position_ids"]
+                non_tensor_batch_keys_to_pop = ["raw_prompt_ids", "data_source"]
+                if "multi_modal_data" in test_batch.non_tensor_batch:
+                    non_tensor_batch_keys_to_pop.append("multi_modal_data")
+                if "raw_prompt" in test_batch.non_tensor_batch:
+                    non_tensor_batch_keys_to_pop.append("raw_prompt")
+                if "tools_kwargs" in test_batch.non_tensor_batch:
+                    non_tensor_batch_keys_to_pop.append("tools_kwargs")
+                if "env_kwargs" in test_batch.non_tensor_batch:
+                    non_tensor_batch_keys_to_pop.append("env_kwargs")
+                test_gen_batch = test_batch.pop(
+                    batch_keys=batch_keys_to_pop,
+                    non_tensor_batch_keys=non_tensor_batch_keys_to_pop,
+                )
 
-            # # unpad
-            # test_output_gen_batch = unpad_dataproto(test_output_gen_batch_padded, pad_size=pad_size)
+                test_gen_batch.meta_info = {
+                    "eos_token_id": self.tokenizer.eos_token_id,
+                    "pad_token_id": self.tokenizer.pad_token_id,
+                    "recompute_log_prob": False,
+                    "do_sample": self.config.actor_rollout_ref.rollout.val_kwargs.do_sample,
+                    "validate": True,
+                }
+                print(f"test_gen_batch meta info: {test_gen_batch.meta_info}")
 
-            ################ agent-environment loop ###############
-            test_output_gen_batch = self.traj_collector.multi_turn_loop(
-                                                    gen_batch=test_gen_batch,
-                                                    actor_rollout_wg=self.actor_rollout_wg,
-                                                    envs=self.val_envs,
-                                                    is_train=False,
-                                                    )
-            print('validation generation end')
-            del test_batch
-            test_batch = test_output_gen_batch
-            # Store generated outputs
-            output_ids = test_output_gen_batch.batch["responses"]
-            output_texts = [self.tokenizer.decode(ids, skip_special_tokens=True) for ids in output_ids]
-            sample_outputs.extend(output_texts)
+                # # pad to be divisible by dp_size
+                # test_gen_batch_padded, pad_size = pad_dataproto_to_divisor(test_gen_batch, self.actor_rollout_wg.world_size)
+                # test_output_gen_batch_padded = self.actor_rollout_wg.generate_sequences(test_gen_batch_padded)
 
-            # test_batch = test_batch.union(test_output_gen_batch)
+                # # unpad
+                # test_output_gen_batch = unpad_dataproto(test_output_gen_batch_padded, pad_size=pad_size)
 
-            # evaluate using reward_function
-            result = self.val_reward_fn(test_batch, return_dict=True)
-            reward_tensor = result["reward_tensor"]
-            scores = reward_tensor.sum(-1).cpu().tolist()
-            sample_scores.extend(scores)
+                ################ agent-environment loop ###############
+                test_output_gen_batch = self.traj_collector.multi_turn_loop(
+                                                        gen_batch=test_gen_batch,
+                                                        actor_rollout_wg=self.actor_rollout_wg,
+                                                        envs=val_envs,
+                                                        is_train=False,
+                                                        )
+                print(f"validation generation end{f' ({split_name})' if split_name else ''}")
+                del test_batch
+                test_batch = test_output_gen_batch
+                # Store generated outputs
+                output_ids = test_output_gen_batch.batch["responses"]
+                output_texts = [self.tokenizer.decode(ids, skip_special_tokens=True) for ids in output_ids]
+                sample_outputs.extend(output_texts)
 
-            reward_tensor_lst.append(reward_tensor)
-            data_source_lst.append(test_batch.non_tensor_batch.get('data_source', ['unknown'] * reward_tensor.shape[0]))
-            tool_calling_list.append(test_output_gen_batch.non_tensor_batch['tool_callings'])
-            traj_uid_list.append(test_output_gen_batch.non_tensor_batch['traj_uid'])
-            # success rate
-            for k in test_batch.non_tensor_batch.keys():
-                if 'success_rate' in k:
-                    if k not in success_rate_dict:
-                        success_rate_dict[k] = []
-                    success_rate_dict[k].append(test_batch.non_tensor_batch[k][0])
-                    # all success_rate should be the same
-                    for i in range(1, len(test_batch.non_tensor_batch[k])):
-                        assert test_batch.non_tensor_batch[k][0] == test_batch.non_tensor_batch[k][i], f'not all success_rate are the same, 0: {test_batch.non_tensor_batch[k][0]}, {i}: {test_batch.non_tensor_batch[k][i]}'
+                # test_batch = test_batch.union(test_output_gen_batch)
+
+                # evaluate using reward_function
+                result = self.val_reward_fn(test_batch, return_dict=True)
+                reward_tensor = result["reward_tensor"]
+                scores = reward_tensor.sum(-1).cpu().tolist()
+                sample_scores.extend(scores)
+
+                reward_tensor_lst.append(reward_tensor)
+                data_source_lst.append(test_batch.non_tensor_batch.get('data_source', ['unknown'] * reward_tensor.shape[0]))
+                tool_calling_list.append(test_output_gen_batch.non_tensor_batch['tool_callings'])
+                traj_uid_list.append(test_output_gen_batch.non_tensor_batch['traj_uid'])
+                batch_traj_count = len(np.unique(test_output_gen_batch.non_tensor_batch['traj_uid']))
+                # success rate
+                for k in test_batch.non_tensor_batch.keys():
+                    if 'success_rate' in k:
+                        if k not in success_rate_dict:
+                            success_rate_dict[k] = []
+                        weight = batch_traj_count if k == 'success_rate' else 1
+                        success_rate_dict[k].append((test_batch.non_tensor_batch[k][0], weight))
+                        # all success_rate should be the same
+                        for i in range(1, len(test_batch.non_tensor_batch[k])):
+                            assert test_batch.non_tensor_batch[k][0] == test_batch.non_tensor_batch[k][i], f'not all success_rate are the same, 0: {test_batch.non_tensor_batch[k][0]}, {i}: {test_batch.non_tensor_batch[k][i]}'
+
+            if sample_limit is not None and processed_samples >= sample_limit:
+                break
 
         self._maybe_log_val_generations(inputs=sample_inputs, outputs=sample_outputs, scores=sample_scores)
+
+        # dump validation generations if enabled
+        val_data_dir = self.config.trainer.get("validation_data_dir", None)
+        if val_data_dir:
+            dump_path = os.path.join(val_data_dir, split_name) if split_name else val_data_dir
+            self._dump_generations(
+                inputs=sample_inputs,
+                outputs=sample_outputs,
+                scores=sample_scores,
+                reward_extra_infos_dict={},
+                dump_path=dump_path,
+            )
+
+        if not reward_tensor_lst:
+            return {}
 
         reward_tensor = torch.cat(reward_tensor_lst, dim=0).sum(-1).cpu()  # (batch_size,)
         data_sources = np.concatenate(data_source_lst, axis=0)
         tool_callings = np.concatenate(tool_calling_list, axis=0)
         traj_uids = np.concatenate(traj_uid_list, axis=0)
-        success_rate = {k: np.mean(v) for k, v in success_rate_dict.items()}
+        success_rate = {
+            k: sum(float(value) * weight for value, weight in values) / sum(weight for _, weight in values)
+            for k, values in success_rate_dict.items()
+            if sum(weight for _, weight in values) > 0
+        }
+
+        _unique_traj_uid, unique_idx = np.unique(traj_uids, return_index=True)
+        reward_values = reward_tensor.numpy()
+        episode_rewards = reward_values[unique_idx]
+        episode_data_sources = data_sources[unique_idx]
+        episode_tool_callings = tool_callings[unique_idx]
 
         # evaluate test_score based on data source
         data_source_reward = {}
-        for i in range(reward_tensor.shape[0]):
-            data_source = data_sources[i]
+        for i in range(episode_rewards.shape[0]):
+            data_source = episode_data_sources[i]
             if data_source not in data_source_reward:
                 data_source_reward[data_source] = []
-            data_source_reward[data_source].append(reward_tensor[i].item())
+            data_source_reward[data_source].append(float(episode_rewards[i]))
 
         # evaluate tool call based on data source
         # the values in tool_callings represent the tool call count for each trajectory; however, since the batch is expanded by step, we only need to take one value for each unique trajectories.
         data_source_tool_calling = {}
-        unique_traj_uid, unique_idx = np.unique(traj_uids, return_index=True)
-        unique_data_sources = data_sources[unique_idx]
-        unique_tool_callings = tool_callings[unique_idx]
 
-        for i in range(unique_tool_callings.shape[0]):
-            data_source = unique_data_sources[i]
+        for i in range(episode_tool_callings.shape[0]):
+            data_source = episode_data_sources[i]
             if data_source not in data_source_tool_calling:
                 data_source_tool_calling[data_source] = []
-            data_source_tool_calling[data_source].append(unique_tool_callings[i].item())
+            data_source_tool_calling[data_source].append(float(episode_tool_callings[i]))
 
         metric_dict = {}
+        metric_dict['val/test_score'] = np.mean(episode_rewards)
         for data_source, rewards in data_source_reward.items():
             metric_dict[f'val/{data_source}/test_score'] = np.mean(rewards)
 

@@ -654,15 +654,39 @@ def make_envs(config):
         else:
             raise ValueError(f"Unsupported environment: {config.env.env_name}")
 
-        env_kwargs = {
+        def _eval_split_name(eval_dataset):
+            if eval_dataset == 'eval_in_distribution':
+                return 'seen'
+            if eval_dataset == 'eval_out_of_distribution':
+                return 'unseen'
+            return str(eval_dataset).replace('eval_', '').replace('_distribution', '').replace('/', '_')
+
+        def _build_val_envs(eval_dataset):
+            val_env_kwargs = {
+                'eval_dataset': eval_dataset,
+            }
+            _val_envs = build_alfworld_envs(alf_config_path, config.env.seed + 1000, config.data.val_batch_size, 1, is_train=False, env_kwargs=val_env_kwargs, resources_per_worker=resources_per_worker)
+            return AlfWorldEnvironmentManager(_val_envs, projection_f, config)
+
+        train_env_kwargs = {
             'eval_dataset': config.env.alfworld.eval_dataset, # 'eval_in_distribution' or 'eval_out_of_distribution'
         }
-        _envs = build_alfworld_envs(alf_config_path, config.env.seed, config.data.train_batch_size, group_n, is_train=True, env_kwargs=env_kwargs, resources_per_worker=resources_per_worker)
-        _val_envs = build_alfworld_envs(alf_config_path, config.env.seed + 1000, config.data.val_batch_size, 1, is_train=False, env_kwargs=env_kwargs, resources_per_worker=resources_per_worker)
+        eval_datasets = config.env.alfworld.get('eval_datasets', None)
+        if eval_datasets is None:
+            eval_datasets = [config.env.alfworld.eval_dataset]
+        elif isinstance(eval_datasets, str):
+            eval_datasets = [eval_datasets]
+        else:
+            eval_datasets = list(eval_datasets)
+
+        _envs = build_alfworld_envs(alf_config_path, config.env.seed, config.data.train_batch_size, group_n, is_train=True, env_kwargs=train_env_kwargs, resources_per_worker=resources_per_worker)
         
         projection_f = partial(alfworld_projection)
         envs = AlfWorldEnvironmentManager(_envs, projection_f, config)
-        val_envs = AlfWorldEnvironmentManager(_val_envs, projection_f, config)
+        if len(eval_datasets) > 1:
+            val_envs = {_eval_split_name(eval_dataset): _build_val_envs(eval_dataset) for eval_dataset in eval_datasets}
+        else:
+            val_envs = _build_val_envs(eval_datasets[0])
         return envs, val_envs
     elif "sokoban" in config.env.env_name.lower():
         from agent_system.environments.env_package.sokoban import build_sokoban_envs, sokoban_projection

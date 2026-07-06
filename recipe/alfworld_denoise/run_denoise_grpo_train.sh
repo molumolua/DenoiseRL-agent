@@ -5,12 +5,13 @@ export WANDB_MODE=offline
 set -x
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-source "${SCRIPT_DIR}/params.sh"
-
-PREFIX_POOL_PATH=${PREFIX_POOL_PATH:-""}
+DUMP_EXPERIMENT_NAME=${DUMP_EXPERIMENT_NAME:-denoise_grpo_qwen2.5_1.5b_unified}
 MAIN_ROLLOUT_N=${MAIN_ROLLOUT_N:-4}
 SUB_ROLLOUT_K=${SUB_ROLLOUT_K:-4}
 GROUP_SIZE=$((MAIN_ROLLOUT_N + SUB_ROLLOUT_K))
+source "${SCRIPT_DIR}/params.sh"
+
+PREFIX_POOL_PATH=${PREFIX_POOL_PATH:-""}
 
 if [ -z "$PREFIX_POOL_PATH" ]; then
   echo "Set PREFIX_POOL_PATH to a JSONL pool of small-model ALFWorld trajectory prefixes."

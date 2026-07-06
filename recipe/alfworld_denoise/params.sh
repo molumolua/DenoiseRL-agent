@@ -16,11 +16,23 @@ case "${MODEL_PATH}" in
 esac
 
 TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE:-16}
+# Parallel env workers for validation (does NOT cap how many games get
+# evaluated; _validate loops over the whole val parquet). Lower this if you
+# OOM on the val step.
 VAL_BATCH_SIZE=${VAL_BATCH_SIZE:-128}
+# How many ALFWorld games to write into test.parquet during data prep.
+# 140 covers valid_seen (140) and valid_unseen (134) fully; pick the larger.
+VAL_DATA_SIZE=${VAL_DATA_SIZE:-140}
 GROUP_SIZE=${GROUP_SIZE:-8}
 MAX_STEPS=${MAX_STEPS:-50}
 HISTORY_LENGTH=${HISTORY_LENGTH:-2}
 NUM_CPUS_PER_ENV_WORKER=${NUM_CPUS_PER_ENV_WORKER:-0.1}
+
+# Which ALFWorld val split(s) to evaluate on during training/eval.
+#   unseen  -> valid_unseen (134 games, ALFWorld paper standard / OOD)
+#   seen    -> valid_seen   (140 games, in-distribution)
+#   both    -> run seen and unseen in the same validation pass and report each separately
+EVAL_SPLIT=${EVAL_SPLIT:-both}
 
 PROMPT_LENGTH=${PROMPT_LENGTH:-4096}
 RESPONSE_LENGTH=${RESPONSE_LENGTH:-512}
@@ -50,11 +62,27 @@ TEST_FREQ=${TEST_FREQ:-5}
 SAVE_FREQ=${SAVE_FREQ:--1}
 PROJECT_NAME=${PROJECT_NAME:-verl_agent_alfworld_unified}
 
+# Per-step prompt/response dumps. Empty by default; set to a path to enable.
+# Each training step writes ${ROLLOUT_DATA_DIR}/${global_step}.jsonl;
+# each validation pass writes ${VALIDATION_DATA_DIR}/${global_step}.jsonl.
+# Each line is one (prompt, response, score) sample.
+ENABLE_DUMP=${ENABLE_DUMP:-1}
+DUMP_ROOT=${DUMP_ROOT:-${RECIPE_DIR}/dumps}
+DUMP_EXPERIMENT_NAME=${DUMP_EXPERIMENT_NAME:-${EXPERIMENT_NAME:-alfworld_dump}}
+if [ "${ENABLE_DUMP}" = "1" ]; then
+  ROLLOUT_DATA_DIR=${ROLLOUT_DATA_DIR:-"${DUMP_ROOT%/}/${DUMP_EXPERIMENT_NAME}/rollout"}
+  VALIDATION_DATA_DIR=${VALIDATION_DATA_DIR:-"${DUMP_ROOT%/}/${DUMP_EXPERIMENT_NAME}/validation"}
+else
+  ROLLOUT_DATA_DIR=""
+  VALIDATION_DATA_DIR=""
+fi
+
 prepare_alfworld_data() {
   local train_file="${VERL_AGENT_DATA_DIR}/text/train.parquet"
   local val_file="${VERL_AGENT_DATA_DIR}/text/test.parquet"
   if [[ -f "${train_file}" && -f "${val_file}" ]]; then
     echo "Using local trainer parquet files: ${VERL_AGENT_DATA_DIR}/text"
+    echo "  (if you changed VAL_DATA_SIZE / EVAL_SPLIT, delete test.parquet to force regenerate)"
     return 0
   fi
 
@@ -68,7 +96,40 @@ prepare_alfworld_data() {
     --mode text \
     --local_dir "${VERL_AGENT_DATA_DIR}" \
     --train_data_size "${TRAIN_BATCH_SIZE}" \
-    --val_data_size "${VAL_BATCH_SIZE}"
+    --val_data_size "${VAL_DATA_SIZE}"
+}
+
+# Map EVAL_SPLIT token to the ALFWorld env config value and to a display name
+# used in experiment tags and dump paths.
+#   unseen -> eval_out_of_distribution / "unseen"
+#   seen   -> eval_in_distribution     / "seen"
+# Sets EVAL_SPLITS (space-separated display names), EVAL_ALFWORLD_DATASET
+# (legacy single value), and EVAL_ALFWORLD_DATASETS (Hydra list).
+case "${EVAL_SPLIT}" in
+  unseen)
+    EVAL_SPLITS="unseen"
+    EVAL_ALFWORLD_DATASET="eval_out_of_distribution"
+    EVAL_ALFWORLD_DATASETS="[eval_out_of_distribution]"
+    ;;
+  seen)
+    EVAL_SPLITS="seen"
+    EVAL_ALFWORLD_DATASET="eval_in_distribution"
+    EVAL_ALFWORLD_DATASETS="[eval_in_distribution]"
+    ;;
+  both)
+    EVAL_SPLITS="seen unseen"
+    EVAL_ALFWORLD_DATASET="eval_out_of_distribution"
+    EVAL_ALFWORLD_DATASETS="[eval_in_distribution,eval_out_of_distribution]"
+    ;;
+  *) echo "Invalid EVAL_SPLIT='${EVAL_SPLIT}'. Expected: unseen | seen | both"; exit 1 ;;
+esac
+
+eval_dataset_for() {
+  case "$1" in
+    unseen) echo "eval_out_of_distribution" ;;
+    seen)   echo "eval_in_distribution" ;;
+    *)      echo "unknown" ;;
+  esac
 }
 
 ALFWORLD_COMMON_ARGS=(
@@ -118,6 +179,8 @@ ALFWORLD_COMMON_ARGS=(
   "env.history_length=${HISTORY_LENGTH}"
   "env.max_steps=${MAX_STEPS}"
   "env.rollout.n=${GROUP_SIZE}"
+  "env.alfworld.eval_dataset=${EVAL_ALFWORLD_DATASET}"
+  "env.alfworld.eval_datasets=${EVAL_ALFWORLD_DATASETS}"
   "env.resources_per_worker.num_cpus=${NUM_CPUS_PER_ENV_WORKER}"
   "trainer.critic_warmup=0"
   "trainer.logger=['console','wandb']"
@@ -129,3 +192,12 @@ ALFWORLD_COMMON_ARGS=(
   "trainer.total_epochs=${TOTAL_EPOCHS}"
   "trainer.val_before_train=True"
 )
+
+# Optional per-step prompt/response dumps. Only forwarded when set, so empty
+# values don't override the trainer defaults (null = no dump).
+if [ -n "${ROLLOUT_DATA_DIR}" ]; then
+  ALFWORLD_COMMON_ARGS+=("trainer.rollout_data_dir=${ROLLOUT_DATA_DIR}")
+fi
+if [ -n "${VALIDATION_DATA_DIR}" ]; then
+  ALFWORLD_COMMON_ARGS+=("trainer.validation_data_dir=${VALIDATION_DATA_DIR}")
+fi

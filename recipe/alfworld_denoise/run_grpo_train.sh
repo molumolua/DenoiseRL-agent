@@ -5,6 +5,7 @@ export WANDB_MODE=offline
 set -x
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+DUMP_EXPERIMENT_NAME=${DUMP_EXPERIMENT_NAME:-grpo_qwen2.5_1.5b_unified}
 source "${SCRIPT_DIR}/params.sh"
 
 prepare_alfworld_data

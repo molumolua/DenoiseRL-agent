@@ -12,6 +12,7 @@ This recipe keeps GRPO, DAPO, DenoiseRL, and DenoiseRL+DAPO on one parameter sur
 - History length: `2`
 - Learning rate: `1e-6`
 - Eval frequency during training: every 5 epochs (`trainer.test_freq=5`)
+- Validation splits: `seen` and `unseen` by default (`EVAL_SPLIT=both`), logged separately as `val/seen/...` and `val/unseen/...`
 - On-policy: no rollout cache/reuse is introduced; DAPO only oversamples with the current policy before an update. Denoise prefixes are replayed into the environment and prompt history, but PPO loss is only on newly generated policy actions.
 
 All scripts source `params.sh`. Override any default with env vars, e.g.:
@@ -29,6 +30,8 @@ Relative `MODEL_PATH` values are resolved under:
 For example, `MODEL_PATH=qwen/qwen2.5-1.5B-instruct` becomes `/inspire/hdd/global_user/xucaijun-253108120121/Model/qwen/qwen2.5-1.5B-instruct`. Absolute paths are used as-is.
 
 The default prompt length is intentionally lower than long-horizon AppWorld-style settings: ALFWorld prompts are mostly task text plus compact action history, so `4096 / 512` is usually a better first budget than a very long context. If you increase `HISTORY_LENGTH` or keep verbose observations, override `PROMPT_LENGTH` and `MAX_MODEL_LEN` together.
+
+During validation, `valid_seen` and `valid_unseen` are evaluated with separate ALFWorld envs when `EVAL_SPLIT=both`. Override with `EVAL_SPLIT=seen` or `EVAL_SPLIT=unseen` to evaluate only one split.
 
 ## Offline Data
 

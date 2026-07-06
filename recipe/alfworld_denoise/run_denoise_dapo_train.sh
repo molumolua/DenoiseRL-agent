@@ -4,12 +4,13 @@ set -euxo pipefail
 export WANDB_MODE=offline
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-source "${SCRIPT_DIR}/params.sh"
-
-PREFIX_POOL_PATH=${PREFIX_POOL_PATH:-""}
+DUMP_EXPERIMENT_NAME=${DUMP_EXPERIMENT_NAME:-denoise_dapo_qwen2.5_1.5b_unified}
 MAIN_ROLLOUT_N=${MAIN_ROLLOUT_N:-4}
 SUB_ROLLOUT_K=${SUB_ROLLOUT_K:-4}
 GROUP_SIZE=$((MAIN_ROLLOUT_N + SUB_ROLLOUT_K))
+source "${SCRIPT_DIR}/params.sh"
+
+PREFIX_POOL_PATH=${PREFIX_POOL_PATH:-""}
 MAX_NUM_GEN_BATCHES=${MAX_NUM_GEN_BATCHES:-10}
 
 if [ -z "$PREFIX_POOL_PATH" ]; then

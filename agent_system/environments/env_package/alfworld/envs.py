@@ -128,8 +128,11 @@ class AlfworldEnvs(gym.Env):
         env_type = config['env']['type']
         base_env = get_environment(env_type)(config, train_eval='train' if is_train else eval_dataset)
         self.multi_modal = (env_type == 'AlfredThorEnv')
+        self.num_games = base_env.num_games
+        env_num = min(env_num, self.num_games) if not is_train else env_num
         self.num_processes = env_num * group_n
         self.group_n = group_n
+        self.active_processes = self.num_processes
 
         # Create Ray remote actors instead of processes
         env_worker = ray.remote(**resources_per_worker)(AlfworldWorker)
@@ -141,12 +144,12 @@ class AlfworldEnvs(gym.Env):
         self.prev_admissible_commands = [None for _ in range(self.num_processes)]
 
     def step(self, actions):
-        assert len(actions) == self.num_processes, \
-            "The num of actions must be equal to the num of processes"
+        assert len(actions) == self.active_processes, \
+            "The num of actions must be equal to the num of active processes"
 
         # Send step commands to all workers
         futures = []
-        for i, worker in enumerate(self.workers):
+        for i, worker in enumerate(self.workers[:self.active_processes]):
             future = worker.step.remote(actions[i])
             futures.append(future)
 
@@ -170,7 +173,7 @@ class AlfworldEnvs(gym.Env):
             rewards_list.append(compute_reward(info, self.multi_modal))
 
         if self.multi_modal:
-            image_obs_list = self.getobs()
+            image_obs_list = self.getobs(active_only=True)
         else:
             image_obs_list = None
 
@@ -184,9 +187,9 @@ class AlfworldEnvs(gym.Env):
         if isinstance(kwargs, dict):
             return [dict(kwargs) for _ in range(self.num_processes)]
         if isinstance(kwargs, list):
-            if len(kwargs) != self.num_processes:
+            if len(kwargs) > self.num_processes:
                 raise ValueError(
-                    f"reset kwargs length ({len(kwargs)}) must match num_processes ({self.num_processes})."
+                    f"reset kwargs length ({len(kwargs)}) must be <= num_processes ({self.num_processes})."
                 )
             return [dict(item or {}) for item in kwargs]
         raise TypeError(f"Unsupported reset kwargs type: {type(kwargs)}")
@@ -196,13 +199,14 @@ class AlfworldEnvs(gym.Env):
         Send the reset command to all workers at once and collect initial obs/info from each environment.
         """
         reset_kwargs = self._normalize_reset_kwargs(kwargs)
+        self.active_processes = len(reset_kwargs)
         text_obs_list = []
         image_obs_list = []
         info_list = []
 
         # Send reset commands to all workers
         futures = []
-        for i, worker in enumerate(self.workers):
+        for i, worker in enumerate(self.workers[:self.active_processes]):
             trajectory_prefix = (
                 reset_kwargs[i].get("trajectory_prefix")
                 or reset_kwargs[i].get("prefix_actions")
@@ -221,19 +225,20 @@ class AlfworldEnvs(gym.Env):
             info_list.append(info)
 
         if self.multi_modal:
-            image_obs_list = self.getobs()
+            image_obs_list = self.getobs(active_only=True)
         else:
             image_obs_list = None
 
         return text_obs_list, image_obs_list, info_list
 
-    def getobs(self):
+    def getobs(self, active_only=False):
         """
         Ask each worker to return its current frame image.
         Usually needed only for multi-modal environments; otherwise can return None.
         """
         futures = []
-        for worker in self.workers:
+        workers = self.workers[:self.active_processes] if active_only else self.workers
+        for worker in workers:
             future = worker.getobs.remote()
             futures.append(future)
 
@@ -246,7 +251,7 @@ class AlfworldEnvs(gym.Env):
         Simply return the prev_admissible_commands stored by the main process.
         You could also design it to fetch after each step or another method.
         """
-        return self.prev_admissible_commands
+        return self.prev_admissible_commands[:self.active_processes]
 
     def close(self):
         """
