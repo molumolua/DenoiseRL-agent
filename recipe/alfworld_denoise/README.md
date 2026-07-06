@@ -6,6 +6,10 @@ This recipe keeps GRPO, DAPO, DenoiseRL, and DenoiseRL+DAPO on one parameter sur
 
 - Train temperature: `1.0`
 - Validation temperature / top-p: `0.6 / 0.95`
+- RL solver model: `Qwen/Qwen2.5-7B-Instruct`
+- Online denoiser model: `Qwen/Qwen2.5-1.5B-Instruct`
+- GPUs: GRPO/DAPO use `4` GPUs by default; DenoiseRL uses `8` GPUs by default.
+- Tensor parallel size: `4`
 - Prompt / response length: `4096 / 512`
 - Prompt batch size: `16`
 - Rollout group size: `8`
@@ -29,7 +33,7 @@ Relative `MODEL_PATH` values are resolved under:
 /inspire/hdd/global_user/xucaijun-253108120121/Model
 ```
 
-For example, `MODEL_PATH=qwen/qwen2.5-1.5B-instruct` becomes `/inspire/hdd/global_user/xucaijun-253108120121/Model/qwen/qwen2.5-1.5B-instruct`. Absolute paths are used as-is.
+For example, `MODEL_PATH=Qwen/Qwen2.5-7B-Instruct` becomes `/inspire/hdd/global_user/xucaijun-253108120121/Model/Qwen/Qwen2.5-7B-Instruct`. Absolute paths are used as-is.
 
 The default prompt length is intentionally lower than long-horizon AppWorld-style settings: ALFWorld prompts are mostly task text plus compact action history, so `4096 / 512` is usually a better first budget than a very long context. If you increase `HISTORY_LENGTH` or keep verbose observations, override `PROMPT_LENGTH` and `MAX_MODEL_LEN` together.
 
@@ -118,10 +122,10 @@ bash recipe/alfworld_denoise/run_dapo_train.sh
 Evaluate checkpoints:
 
 ```bash
-CKPT_DIR=checkpoints/verl_agent_alfworld_unified/grpo_qwen2.5_1.5b_unified \
+CKPT_DIR=checkpoints/verl_agent_alfworld_unified/grpo_qwen2.5_7b_unified \
 bash recipe/alfworld_denoise/run_grpo_eval.sh
 
-CKPT_DIR=checkpoints/verl_agent_alfworld_unified/dapo_qwen2.5_1.5b_unified \
+CKPT_DIR=checkpoints/verl_agent_alfworld_unified/dapo_qwen2.5_7b_unified \
 bash recipe/alfworld_denoise/run_dapo_eval.sh
 ```
 
@@ -130,10 +134,8 @@ bash recipe/alfworld_denoise/run_dapo_eval.sh
 DenoiseRL mixes `N` clean rollouts and `K` online-denoised rollouts per task group. The default is `N=4, K=4`. In the default `full_then_ratio` strategy, the fixed small denoiser first runs a full shadow rollout on each sub-rollout env, then the env is reset to the same ALFWorld gamefile and only the first ratio of denoiser actions is replayed. The solver continues from that partial perturbed state, and PPO trains only on solver-generated actions. Terminal denoiser actions are not replayed by default, so the solver does not inherit an already-failed final state.
 
 ```bash
-DENOISE_MODEL_PATH=Qwen/Qwen2.5-0.5B-Instruct \
 bash recipe/alfworld_denoise/run_denoise_grpo_train.sh
 
-DENOISE_MODEL_PATH=Qwen/Qwen2.5-0.5B-Instruct \
 bash recipe/alfworld_denoise/run_denoise_dapo_train.sh
 ```
 
@@ -141,6 +143,7 @@ Useful online knobs:
 
 ```bash
 DENOISE_PREFIX_STRATEGY=full_then_ratio
+DENOISE_MODEL_PATH=Qwen/Qwen2.5-1.5B-Instruct
 DENOISE_PREFIX_RATIO=0.3
 DENOISE_PREFIX_CANDIDATES_PER_GROUP=${SUB_ROLLOUT_K}
 DENOISE_PREFIX_SAMPLE_SEED=${SEED:-0}

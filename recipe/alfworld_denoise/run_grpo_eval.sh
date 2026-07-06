@@ -9,7 +9,7 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # Final evaluation defaults: report both ALFWorld splits (seen + unseen).
 # Override via env vars, e.g. EVAL_SPLIT=unseen bash run_grpo_eval.sh.
 EVAL_SPLIT=${EVAL_SPLIT:-both}
-DUMP_EXPERIMENT_NAME=${DUMP_EXPERIMENT_NAME:-grpo_qwen2.5_1.5b_unified_eval}
+DUMP_EXPERIMENT_NAME=${DUMP_EXPERIMENT_NAME:-grpo_qwen2.5_7b_unified_eval}
 
 source "${SCRIPT_DIR}/params.sh"
 

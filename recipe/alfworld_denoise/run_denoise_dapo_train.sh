@@ -4,13 +4,14 @@ set -euxo pipefail
 export WANDB_MODE=offline
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-DUMP_EXPERIMENT_NAME=${DUMP_EXPERIMENT_NAME:-denoise_dapo_qwen2.5_1.5b_unified}
+DUMP_EXPERIMENT_NAME=${DUMP_EXPERIMENT_NAME:-denoise_dapo_qwen2.5_7b_1.5b_unified}
 MAIN_ROLLOUT_N=${MAIN_ROLLOUT_N:-4}
 SUB_ROLLOUT_K=${SUB_ROLLOUT_K:-4}
 GROUP_SIZE=$((MAIN_ROLLOUT_N + SUB_ROLLOUT_K))
+N_GPUS_PER_NODE=${N_GPUS_PER_NODE:-8}
 source "${SCRIPT_DIR}/params.sh"
 
-DENOISE_MODEL_PATH=${DENOISE_MODEL_PATH:-""}
+DENOISE_MODEL_PATH=${DENOISE_MODEL_PATH:-Qwen/Qwen2.5-1.5B-Instruct}
 DENOISE_PREFIX_STRATEGY=${DENOISE_PREFIX_STRATEGY:-full_then_ratio}
 DENOISE_PREFIX_RATIO=${DENOISE_PREFIX_RATIO:-0.3}
 DENOISE_PREFIX_CANDIDATES_PER_GROUP=${DENOISE_PREFIX_CANDIDATES_PER_GROUP:-${SUB_ROLLOUT_K}}
@@ -77,5 +78,5 @@ python3 -m recipe.alfworld_denoise.main_online_denoise \
   "env.denoise.online.max_num_batched_tokens=${DENOISE_MAX_NUM_BATCHED_TOKENS}" \
   "env.denoise.online.shared_gpu_memory_utilization=${DENOISE_SHARED_GPU_MEMORY_UTILIZATION}" \
   "env.denoise.online.colocate_gpu_util_cap=${DENOISE_COLOCATE_GPU_UTIL_CAP}" \
-  "trainer.experiment_name=${EXPERIMENT_NAME:-denoise_dapo_qwen2.5_1.5b_unified}" \
+  "trainer.experiment_name=${EXPERIMENT_NAME:-denoise_dapo_qwen2.5_7b_1.5b_unified}" \
   "$@"
