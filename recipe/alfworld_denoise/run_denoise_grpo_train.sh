@@ -45,7 +45,7 @@ esac
 prepare_alfworld_data
 
 python3 -m recipe.alfworld_denoise.main_online_denoise \
-  --config-path recipe/alfworld_denoise/config \
+  --config-path config \
   --config-name alfworld_denoise_trainer \
   "${ALFWORLD_COMMON_ARGS[@]}" \
   "algorithm.adv_estimator=grpo" \
