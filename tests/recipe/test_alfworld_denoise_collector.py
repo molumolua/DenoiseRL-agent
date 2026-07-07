@@ -107,14 +107,20 @@ def test_step_budget_resets_and_drops_terminal_prefix_step():
     ]
     envs = _FakeOnlineEnv()
 
-    replay_obs, prefix_lens = collector._run_step_budget_prefixes(
+    replay_obs, metrics = collector._run_step_budget_prefixes(
         gen_batch=_FakeGenBatch(),
         obs={"text": ["init-0", "init-1", "init-2"], "image": None, "anchor": []},
         envs=envs,
         reset_kwargs=reset_kwargs,
     )
 
-    assert prefix_lens.tolist() == [0, 0, 2]
+    assert metrics["denoise_prefix_len"].tolist() == [0.0, 0.0, 2.0]
+    assert metrics["denoise_prefix_generated_len"].tolist() == [0.0, 1.0, 2.0]
+    assert metrics["denoise_prefix_action_count"].tolist() == [0.0, 1.0, 2.0]
+    assert metrics["denoise_prefix_invalid_rate"].tolist() == [0.0, 0.0, 0.0]
+    assert metrics["denoise_prefix_terminal"].tolist() == [0.0, 1.0, 0.0]
+    assert metrics["denoise_prefix_terminal_dropped"].tolist() == [0.0, 1.0, 0.0]
+    assert metrics["denoise_prefix_empty"].tolist() == [0.0, 1.0, 0.0]
     assert envs.replay_indices == [1, 2]
     assert envs.replay_actions == [[], ["projected-2-1", "projected-2-2"]]
     assert envs.mixed_prefix_lens == [[0, 1, 1], [0, 1, 2]]

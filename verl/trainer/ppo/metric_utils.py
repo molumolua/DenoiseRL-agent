@@ -76,6 +76,100 @@ def _compute_response_info(batch: DataProto) -> Dict[str, Any]:
     )
 
 
+def _to_float_np(values) -> np.ndarray:
+    arr = np.asarray(values)
+    try:
+        return arr.astype(np.float32)
+    except (TypeError, ValueError):
+        return np.array([float(v) for v in arr], dtype=np.float32)
+
+
+def _to_bool_np(values) -> np.ndarray:
+    arr = np.asarray(values)
+    if arr.dtype == bool:
+        return arr
+    if arr.dtype == object:
+        return np.array(
+            [
+                bool(v) if not isinstance(v, str)
+                else v.strip().lower() not in {"", "0", "false", "no", "off", "none", "null"}
+                for v in arr
+            ],
+            dtype=bool,
+        )
+    return arr.astype(bool)
+
+
+def _add_np_stats(metrics: Dict[str, Any], prefix: str, values: np.ndarray) -> None:
+    if values.size == 0:
+        return
+    metrics[f"{prefix}/mean"] = float(np.mean(values))
+    metrics[f"{prefix}/max"] = float(np.max(values))
+    metrics[f"{prefix}/min"] = float(np.min(values))
+
+
+def _add_denoise_metrics(metrics: Dict[str, Any], batch: DataProto, unique_idx: np.ndarray) -> None:
+    non_tensor = batch.non_tensor_batch
+    if "denoise_is_sub" not in non_tensor:
+        return
+
+    is_sub = _to_bool_np(non_tensor["denoise_is_sub"][unique_idx])
+    is_clean = np.logical_not(is_sub)
+    episode_rewards = _to_float_np(non_tensor["episode_rewards"][unique_idx])
+    episode_lengths = _to_float_np(non_tensor["episode_lengths"][unique_idx])
+    if "denoise_prefix_len" in non_tensor:
+        prefix_lens = _to_float_np(non_tensor["denoise_prefix_len"][unique_idx])
+    else:
+        prefix_lens = np.zeros_like(episode_lengths, dtype=np.float32)
+    total_env_steps = episode_lengths + prefix_lens
+
+    metrics["denoise/rollout/sub_count"] = float(np.sum(is_sub))
+    metrics["denoise/rollout/clean_count"] = float(np.sum(is_clean))
+    metrics["denoise/rollout/sub_ratio"] = float(np.mean(is_sub.astype(np.float32))) if is_sub.size else 0.0
+
+    if np.any(is_clean):
+        _add_np_stats(metrics, "denoise/clean/episode_reward", episode_rewards[is_clean])
+        _add_np_stats(metrics, "denoise/clean/solver_steps", episode_lengths[is_clean])
+        _add_np_stats(metrics, "denoise/clean/env_steps", total_env_steps[is_clean])
+    if np.any(is_sub):
+        _add_np_stats(metrics, "denoise/sub/episode_reward", episode_rewards[is_sub])
+        _add_np_stats(metrics, "denoise/sub/solver_steps", episode_lengths[is_sub])
+        _add_np_stats(metrics, "denoise/sub/env_steps", total_env_steps[is_sub])
+
+        for key, metric_prefix in [
+            ("denoise_prefix_len", "denoise/prefix/len"),
+            ("denoise_prefix_generated_len", "denoise/prefix/generated_len"),
+            ("denoise_prefix_action_count", "denoise/prefix/action_count"),
+            ("denoise_prefix_invalid_count", "denoise/prefix/invalid_count"),
+            ("denoise_prefix_invalid_rate", "denoise/prefix/invalid_rate"),
+        ]:
+            if key in non_tensor:
+                _add_np_stats(metrics, metric_prefix, _to_float_np(non_tensor[key][unique_idx])[is_sub])
+
+        for key, metric_name in [
+            ("denoise_prefix_terminal", "denoise/prefix/terminal_rate"),
+            ("denoise_prefix_terminal_dropped", "denoise/prefix/terminal_dropped_rate"),
+            ("denoise_prefix_won", "denoise/prefix/win_rate"),
+            ("denoise_prefix_empty", "denoise/prefix/empty_rate"),
+        ]:
+            if key in non_tensor:
+                metrics[metric_name] = float(np.mean(_to_float_np(non_tensor[key][unique_idx])[is_sub]))
+
+    if "episode_success" in non_tensor:
+        episode_success = _to_float_np(non_tensor["episode_success"][unique_idx])
+        if np.any(is_clean):
+            metrics["denoise/clean/success_rate"] = float(np.mean(episode_success[is_clean]))
+        if np.any(is_sub):
+            metrics["denoise/sub/success_rate"] = float(np.mean(episode_success[is_sub]))
+            if np.any(is_clean):
+                metrics["denoise/sub_minus_clean/success_rate"] = (
+                    metrics["denoise/sub/success_rate"] - metrics["denoise/clean/success_rate"]
+                )
+                metrics["denoise/sub_minus_clean/episode_reward_mean"] = (
+                    metrics["denoise/sub/episode_reward/mean"] - metrics["denoise/clean/episode_reward/mean"]
+                )
+
+
 def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> Dict[str, Any]:
     """
     Computes various metrics from a batch of data for PPO training.
@@ -186,6 +280,7 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> Dict[str,
         #     batch.non_tensor_batch["tool_callings"][unique_idx].min().item(),
         **({f"episode/{k}": v[0].item() for k, v in batch.non_tensor_batch.items() if "success_rate" in k}),
     }
+    _add_denoise_metrics(metrics, batch, unique_idx)
     return metrics
 
 

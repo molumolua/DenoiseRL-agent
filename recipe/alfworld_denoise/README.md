@@ -135,6 +135,8 @@ DenoiseRL mixes `N` clean rollouts and `K` online-denoised rollouts per task gro
 
 `episode_rewards` and `episode_lengths` report only solver-generated actions. Denoiser prefix actions are replayed into the environment and prompt history, but their rewards and lengths are intentionally excluded from PPO episode scoring. The prefix still consumes ALFWorld's internal environment step budget, so a denoise continuation may hit the environment limit after fewer solver actions than a clean rollout.
 
+Training logs include denoise-specific diagnostics under `denoise/...`: clean/sub rollout counts, clean vs denoise success and reward, solver-only steps, total environment steps (`prefix_len + solver_steps`), replayed/generated prefix length, prefix invalid-action rate, empty-prefix rate, terminal-prefix rate, dropped-terminal-prefix rate, and denoiser shadow win rate. These metrics are computed once per trajectory, not once per solver step.
+
 ```bash
 bash recipe/alfworld_denoise/run_denoise_grpo_train.sh
 
