@@ -47,7 +47,7 @@ KL_COEF=${KL_COEF:-0.01}
 INVALID_ACTION_PENALTY=${INVALID_ACTION_PENALTY:-0.1}
 
 TP_SIZE=${TP_SIZE:-2}
-N_GPUS_PER_NODE=${N_GPUS_PER_NODE:-4}
+N_GPUS_PER_NODE=${N_GPUS_PER_NODE:-8}
 NNODES=${NNODES:-1}
 GPU_MEMORY_UTILIZATION=${GPU_MEMORY_UTILIZATION:-0.6}
 MAX_MODEL_LEN=${MAX_MODEL_LEN:-4608}
@@ -57,9 +57,9 @@ PPO_MINI_BATCH_SIZE=${PPO_MINI_BATCH_SIZE:-256}
 PPO_MICRO_BATCH_SIZE_PER_GPU=${PPO_MICRO_BATCH_SIZE_PER_GPU:-32}
 LOG_PROB_MICRO_BATCH_SIZE_PER_GPU=${LOG_PROB_MICRO_BATCH_SIZE_PER_GPU:-32}
 
-TOTAL_EPOCHS=${TOTAL_EPOCHS:-150}
+TOTAL_EPOCHS=${TOTAL_EPOCHS:-500}
 TEST_FREQ=${TEST_FREQ:-5}
-SAVE_FREQ=${SAVE_FREQ:--1}
+SAVE_FREQ=${SAVE_FREQ:-5}
 PROJECT_NAME=${PROJECT_NAME:-verl_agent_alfworld_unified}
 
 # Per-step prompt/response dumps. Empty by default; set to a path to enable.
@@ -171,6 +171,7 @@ ALFWORLD_COMMON_ARGS=(
   "actor_rollout_ref.rollout.val_kwargs.n=${VAL_N}"
   "actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=${LOG_PROB_MICRO_BATCH_SIZE_PER_GPU}"
   "actor_rollout_ref.ref.fsdp_config.param_offload=True"
+  "+trainer.max_actor_ckpt_to_keep=1"
   "actor_rollout_ref.actor.use_invalid_action_penalty=True"
   "actor_rollout_ref.actor.invalid_action_penalty_coef=${INVALID_ACTION_PENALTY}"
   "algorithm.use_kl_in_reward=False"
