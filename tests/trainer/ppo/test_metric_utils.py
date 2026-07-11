@@ -22,6 +22,7 @@ import numpy as np
 import torch
 
 from verl.trainer.ppo.metric_utils import (
+    _weighted_mean,
     bootstrap_metric,
     calc_maj_val,
     compute_data_metrics,
@@ -66,6 +67,11 @@ class TestReduceMetrics(unittest.TestCase):
         result = reduce_metrics(metrics)
         
         self.assertEqual(result["single"], 5.0)
+
+    def test_weighted_mean_uses_underlying_sample_counts(self):
+        result = _weighted_mean([(0.0, 100), (1.0, 1)])
+
+        self.assertAlmostEqual(result, 1.0 / 101.0)
 
 
 class TestComputeDataMetrics(unittest.TestCase):

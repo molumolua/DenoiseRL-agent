@@ -304,7 +304,10 @@ class AlfworldEnvs(gym.Env):
                 or reset_kwargs[i].get("prefix_actions")
                 or reset_kwargs[i].get("prefix_steps")
             )
-            future = worker.reset.remote(trajectory_prefix)
+            gamefile = reset_kwargs[i].get("gamefile") or reset_kwargs[i].get("extra.gamefile")
+            if isinstance(trajectory_prefix, dict):
+                gamefile = gamefile or trajectory_prefix.get("gamefile")
+            future = worker.reset.remote(trajectory_prefix, gamefile)
             futures.append(future)
 
         # Collect results

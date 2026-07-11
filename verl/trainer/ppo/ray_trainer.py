@@ -46,6 +46,7 @@ from verl.single_controller.ray.base import create_colocated_worker_cls
 from verl.trainer.ppo import core_algos
 from verl.trainer.ppo.core_algos import agg_loss
 from verl.trainer.ppo.metric_utils import (
+    _weighted_mean,
     compute_data_metrics,
     compute_throughout_metrics,
     compute_timing_metrics,
@@ -826,8 +827,15 @@ class RayPPOTrainer:
                     if 'success_rate' in k:
                         if k not in success_rate_dict:
                             success_rate_dict[k] = []
-                        weight = batch_traj_count if k == 'success_rate' else 1
-                        success_rate_dict[k].append((test_batch.non_tensor_batch[k][0], weight))
+                        count_key = k.replace("success_rate", "success_count")
+                        if count_key in test_batch.non_tensor_batch:
+                            weight = float(np.asarray(test_batch.non_tensor_batch[count_key][0]).item())
+                        else:
+                            # Compatibility fallback for custom collectors that
+                            # have not started emitting per-metric counts yet.
+                            weight = batch_traj_count if k == 'success_rate' else 1
+                        if weight > 0:
+                            success_rate_dict[k].append((test_batch.non_tensor_batch[k][0], weight))
                         # all success_rate should be the same
                         for i in range(1, len(test_batch.non_tensor_batch[k])):
                             assert test_batch.non_tensor_batch[k][0] == test_batch.non_tensor_batch[k][i], f'not all success_rate are the same, 0: {test_batch.non_tensor_batch[k][0]}, {i}: {test_batch.non_tensor_batch[k][i]}'
@@ -857,7 +865,7 @@ class RayPPOTrainer:
         tool_callings = np.concatenate(tool_calling_list, axis=0)
         traj_uids = np.concatenate(traj_uid_list, axis=0)
         success_rate = {
-            k: sum(float(value) * weight for value, weight in values) / sum(weight for _, weight in values)
+            k: _weighted_mean(values)
             for k, values in success_rate_dict.items()
             if sum(weight for _, weight in values) > 0
         }

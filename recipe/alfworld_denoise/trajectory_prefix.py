@@ -126,3 +126,34 @@ class PrefixPool:
         if k <= 0 or not self.all_prefixes:
             return []
         return [self.rng.choice(self.all_prefixes) for _ in range(k)]
+
+    @staticmethod
+    def _task_keys_match(prefix_task_key: Optional[str], env_task_key: Optional[str]) -> bool:
+        if not prefix_task_key or not env_task_key:
+            return False
+        prefix_key = str(prefix_task_key).strip().lower().replace("\\", "/").rstrip("/")
+        env_key = str(env_task_key).strip().lower().replace("\\", "/").rstrip("/")
+        if prefix_key == env_key:
+            return True
+        if env_key.endswith(f"/{prefix_key}") or prefix_key.endswith(f"/{env_key}"):
+            return True
+        prefix_parts = prefix_key.split("/")
+        env_parts = env_key.split("/")
+        if len(prefix_parts) >= 2 and len(env_parts) >= 2 and prefix_parts[-2:] == env_parts[-2:]:
+            return True
+        # Prefix datasets sometimes store only an ALFWorld task type/task id
+        # instead of the full gamefile path.
+        return "/" not in prefix_key and prefix_key in env_key
+
+    def sample_for_task(self, task_key: Optional[str], k: int) -> list[TrajectoryPrefix]:
+        """Sample only prefixes that belong to the current ALFWorld task/gamefile."""
+        if k <= 0 or not task_key:
+            return []
+        candidates = [
+            prefix
+            for prefix in self.all_prefixes
+            if self._task_keys_match(prefix.task_key, task_key)
+        ]
+        if not candidates:
+            return []
+        return [self.rng.choice(candidates) for _ in range(k)]

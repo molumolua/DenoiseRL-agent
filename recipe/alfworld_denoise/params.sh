@@ -16,10 +16,10 @@ case "${MODEL_PATH}" in
 esac
 
 TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE:-16}
-# Parallel env workers for validation (does NOT cap how many games get
-# evaluated; _validate loops over the whole val parquet). Lower this if you
-# OOM on the val step.
-VAL_BATCH_SIZE=${VAL_BATCH_SIZE:-128}
+# Parallel env workers for validation. 140 lets the standard seen (140) and
+# unseen (134) splits each finish in one generation pass when VAL_N=1. Lower
+# this if validation runs out of memory; total evaluated games remain unchanged.
+VAL_BATCH_SIZE=${VAL_BATCH_SIZE:-140}
 # How many ALFWorld games to write into test.parquet during data prep.
 # 140 covers valid_seen (140) and valid_unseen (134) fully; pick the larger.
 VAL_DATA_SIZE=${VAL_DATA_SIZE:-140}
@@ -80,23 +80,37 @@ fi
 prepare_alfworld_data() {
   local train_file="${VERL_AGENT_DATA_DIR}/text/train.parquet"
   local val_file="${VERL_AGENT_DATA_DIR}/text/test.parquet"
+
+  parquet_row_count() {
+    python3 -c 'import sys; import pyarrow.parquet as pq; print(pq.ParquetFile(sys.argv[1]).metadata.num_rows)' "$1"
+  }
+
   if [[ -f "${train_file}" && -f "${val_file}" ]]; then
-    echo "Using local trainer parquet files: ${VERL_AGENT_DATA_DIR}/text"
-    echo "  (if you changed VAL_DATA_SIZE / EVAL_SPLIT, delete test.parquet to force regenerate)"
-    return 0
+    local train_rows val_rows
+    if train_rows=$(parquet_row_count "${train_file}") && \
+       val_rows=$(parquet_row_count "${val_file}") && \
+       [[ "${train_rows}" -ge "${TRAIN_BATCH_SIZE}" ]] && \
+       [[ "${val_rows}" -ge "${VAL_DATA_SIZE}" ]]; then
+      echo "Using local trainer parquet files: ${VERL_AGENT_DATA_DIR}/text"
+      echo "  rows: train=${train_rows}, validation=${val_rows}"
+      return 0
+    fi
+    echo "Regenerating trainer parquet files because their row counts are unreadable or too small."
+    echo "  required: train>=${TRAIN_BATCH_SIZE}, validation>=${VAL_DATA_SIZE}"
   fi
 
-  if [[ "${OFFLINE_DATA_ONLY:-0}" == "1" ]]; then
-    echo "Missing local trainer parquet files under ${VERL_AGENT_DATA_DIR}/text and OFFLINE_DATA_ONLY=1."
-    echo "Expected: ${train_file} and ${val_file}"
-    exit 1
-  fi
-
-  python3 -m examples.data_preprocess.prepare \
-    --mode text \
-    --local_dir "${VERL_AGENT_DATA_DIR}" \
-    --train_data_size "${TRAIN_BATCH_SIZE}" \
+  local prepare_args=(
+    --mode text
+    --local_dir "${VERL_AGENT_DATA_DIR}"
+    --train_data_size "${TRAIN_BATCH_SIZE}"
     --val_data_size "${VAL_DATA_SIZE}"
+  )
+  if [[ "${OFFLINE_DATA_ONLY:-0}" == "1" ]]; then
+    HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1 \
+      python3 -m examples.data_preprocess.prepare "${prepare_args[@]}" --offline
+  else
+    python3 -m examples.data_preprocess.prepare "${prepare_args[@]}"
+  fi
 }
 
 # Map EVAL_SPLIT token to the ALFWorld env config value and to a display name

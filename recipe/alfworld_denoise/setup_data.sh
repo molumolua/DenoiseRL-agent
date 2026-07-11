@@ -33,7 +33,7 @@
 #   --force-parquet       Regenerate parquet even if it already exists.
 #   --offline             Force HF offline mode when generating parquet.
 #   --train-size N        Train parquet row count (default: 16, matches params.sh).
-#   --val-size N          Val/test parquet row count (default: 128, matches params.sh).
+#   --val-size N          Val/test parquet row count (default: 140, covers both val splits).
 #   -h, --help            Show this help.
 #
 set -euo pipefail
@@ -61,7 +61,7 @@ SKIP_PARQUET=0
 FORCE_PARQUET=0
 OFFLINE=0
 TRAIN_SIZE=${TRAIN_BATCH_SIZE:-16}
-VAL_SIZE=${VAL_BATCH_SIZE:-128}
+VAL_SIZE=${VAL_DATA_SIZE:-140}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -229,13 +229,29 @@ done
 TRAIN_PARQUET="${VERL_AGENT_DIR}/text/train.parquet"
 TEST_PARQUET="${VERL_AGENT_DIR}/text/test.parquet"
 
+parquet_row_count() {
+  python3 -c 'import sys; import pyarrow.parquet as pq; print(pq.ParquetFile(sys.argv[1]).metadata.num_rows)' "$1"
+}
+
+parquet_has_required_rows() {
+  [[ -f "${TRAIN_PARQUET}" && -f "${TEST_PARQUET}" ]] || return 1
+  local train_rows val_rows
+  train_rows=$(parquet_row_count "${TRAIN_PARQUET}") || return 1
+  val_rows=$(parquet_row_count "${TEST_PARQUET}") || return 1
+  [[ "${train_rows}" -ge "${TRAIN_SIZE}" && "${val_rows}" -ge "${VAL_SIZE}" ]]
+}
+
 if [[ "${SKIP_PARQUET}" -eq 1 ]]; then
   echo "[parquet] skipped (--skip-parquet)"
-elif [[ -f "${TRAIN_PARQUET}" && -f "${TEST_PARQUET}" && "${FORCE_PARQUET}" -eq 0 ]]; then
+elif [[ "${FORCE_PARQUET}" -eq 0 ]] && parquet_has_required_rows; then
   echo "[parquet] already exists, skipping (use --force-parquet to regenerate):"
   echo "   - ${TRAIN_PARQUET}"
   echo "   - ${TEST_PARQUET}"
 else
+  if [[ -f "${TRAIN_PARQUET}" || -f "${TEST_PARQUET}" ]]; then
+    echo "[parquet] existing files are missing rows or unreadable; regenerating."
+    echo "   required rows: train>=${TRAIN_SIZE}, validation>=${VAL_SIZE}"
+  fi
   mkdir -p "${VERL_AGENT_DIR}/text"
   echo "[parquet] generating via examples.data_preprocess.prepare ..."
   EXTRA_ENV=()

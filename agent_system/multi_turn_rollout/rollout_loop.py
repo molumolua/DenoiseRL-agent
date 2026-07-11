@@ -255,8 +255,11 @@ class TrajectoryCollector:
         batch_size = len(total_batch_list)
 
         success_rate = {}
+        success_count = {}
         for key, value in success.items():
             success_rate[key] = np.mean(value)
+            count_key = key.replace("success_rate", "success_count")
+            success_count[count_key] = len(value)
         
         effective_batch = []
         for bs in range(batch_size):
@@ -272,6 +275,11 @@ class TrajectoryCollector:
                     data['tool_callings'] = tool_callings[bs]
                     # success_rate
                     for key, value in success_rate.items():
+                        data[key] = value
+                    # Number of trajectories behind each success-rate mean. This
+                    # lets validation aggregate per-task rates without averaging
+                    # batch means with unequal sample counts.
+                    for key, value in success_count.items():
                         data[key] = value
 
                     effective_batch.append(data)

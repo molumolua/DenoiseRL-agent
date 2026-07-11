@@ -65,7 +65,7 @@ recipe/alfworld_denoise/local_data/
       test.parquet
 ```
 
-`ALFWORLD_DATA` defaults to `recipe/alfworld_denoise/local_data/alfworld`. If the trainer parquet files already exist, `prepare_alfworld_data` skips the Hugging Face download path. On a no-network machine, set `OFFLINE_DATA_ONLY=1` to fail fast if the parquet files are missing.
+`ALFWORLD_DATA` defaults to `recipe/alfworld_denoise/local_data/alfworld`. If the trainer parquet files already contain at least the requested train/validation rows, `prepare_alfworld_data` skips the Hugging Face download path. Files with too few rows are regenerated automatically; on a no-network machine, set `OFFLINE_DATA_ONLY=1` so regeneration uses only the local Hugging Face cache.
 
 ### One-time download (on a machine with internet)
 
@@ -175,4 +175,4 @@ DENOISE_SEPARATE_PROCESS=True
 
 `DENOISE_MODEL_PATH` follows the same relative-path rule as `MODEL_PATH`: relative values resolve under `MODEL_ROOT`. The solver and denoiser share the same Ray GPU pool, but by default they run in separate Ray processes so each process owns only one vLLM sleep-mode engine. The default vLLM memory fractions are `0.2` for the denoiser and `0.5` for the solver. The older shared mode remains available by setting both explicit values to `null` and setting `DENOISE_SHARED_GPU_MEMORY_UTILIZATION`; then the solver uses `min(2x, DENOISE_COLOCATE_GPU_UTIL_CAP)`.
 
-The old JSONL prefix-pool implementation remains available for experiments by setting `env.denoise.mode=prefix_pool` and `env.denoise.prefix_pool_path=...`, but the launch scripts now default to online denoising.
+The old JSONL prefix-pool implementation remains available for experiments by setting `env.denoise.mode=prefix_pool` and `env.denoise.prefix_pool_path=...`, but the launch scripts now default to online denoising. Offline prefixes are selected only after ALFWorld reveals the current gamefile, and only task-matched prefixes are replayed; a sub-rollout stays clean when the pool has no matching prefix.

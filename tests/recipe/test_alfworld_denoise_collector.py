@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from recipe.alfworld_denoise.collector import DenoiseTrajectoryCollector
+from recipe.alfworld_denoise.trajectory_prefix import PrefixPool, PrefixStep, TrajectoryPrefix
 
 
 def _collector(mode="online", grouping="mixed", group_n=3):
@@ -55,6 +56,50 @@ def test_split_advantage_grouping_applies_to_prefix_pool():
     assert uid_batch[1] == uid_batch[2]
     assert uid_batch[3] == uid_batch[4]
     assert uid_batch[3] != uid_batch[5]
+
+
+class _FakePrefixEnv:
+    def __init__(self):
+        self.gamefile = ["/data/game-a/game.tw-pddl", "/data/game-a/game.tw-pddl", "/data/game-b/game.tw-pddl"]
+        self.replay_indices = None
+        self.replay_actions = None
+
+    def reset_selected_with_prefixes(self, indices, prefix_actions):
+        self.replay_indices = list(indices)
+        self.replay_actions = [list(actions) for actions in prefix_actions]
+        return {"text": ["replayed-0", "replayed-1", "replayed-2"], "image": None, "anchor": []}, []
+
+
+def test_prefix_pool_replays_only_task_matched_prefixes():
+    collector = _collector(mode="prefix_pool", grouping="mixed", group_n=3)
+    collector.prefix_pool = PrefixPool(None, seed=0)
+    collector.prefix_pool.all_prefixes = [
+        TrajectoryPrefix(
+            task_key="/data/game-a/game.tw-pddl",
+            steps=(PrefixStep(action="open fridge 1"),),
+            source="small-model",
+        )
+    ]
+    reset_kwargs = [
+        {"denoise_is_sub": False, "denoise_prefix_len": 0},
+        {"denoise_is_sub": True, "denoise_prefix_len": 0},
+        {"denoise_is_sub": True, "denoise_prefix_len": 0},
+    ]
+    envs = _FakePrefixEnv()
+
+    obs, metrics = collector._run_prefix_pool_prefixes(
+        obs={"text": ["init-0", "init-1", "init-2"], "image": None, "anchor": []},
+        infos=[],
+        envs=envs,
+        reset_kwargs=reset_kwargs,
+    )
+
+    assert envs.replay_indices == [1]
+    assert envs.replay_actions == [["open fridge 1"]]
+    assert obs["text"] == ["replayed-0", "replayed-1", "replayed-2"]
+    assert reset_kwargs[1]["denoise_prefix_task_key"] == "/data/game-a/game.tw-pddl"
+    assert reset_kwargs[2]["denoise_is_sub"] is False
+    assert metrics["denoise_is_sub"].tolist() == [False, True, False]
 
 
 class _FakeGenBatch:

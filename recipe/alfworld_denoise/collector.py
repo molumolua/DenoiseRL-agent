@@ -147,31 +147,18 @@ class DenoiseTrajectoryCollector(TrajectoryCollector):
         env_kwargs: list[dict] = []
         num_groups = repeated_batch_size // total_n
         for _ in range(num_groups):
-            prefixes = [] if self.mode == "online" else self.prefix_pool.sample(self.sub_rollout_k)
             for _main_idx in range(self.main_rollout_n):
                 env_kwargs.append({"denoise_is_sub": False, "denoise_prefix_len": 0})
 
-            for sub_idx in range(self.sub_rollout_k):
-                if self.mode == "online":
-                    item = {
+            source = "online" if self.mode == "online" else "prefix_pool_pending"
+            for _sub_idx in range(self.sub_rollout_k):
+                env_kwargs.append(
+                    {
                         "denoise_is_sub": True,
                         "denoise_prefix_len": 0,
-                        "denoise_prefix_source": "online",
+                        "denoise_prefix_source": source,
                     }
-                elif sub_idx < len(prefixes):
-                    prefix = prefixes[sub_idx]
-                    item = prefix.to_env_kwargs()
-                    item.update(
-                        {
-                            "denoise_is_sub": True,
-                            "denoise_prefix_len": len(prefix.steps),
-                            "denoise_prefix_source": prefix.source,
-                            "denoise_prefix_task_key": prefix.task_key,
-                        }
-                    )
-                else:
-                    item = {"denoise_is_sub": False, "denoise_prefix_len": 0}
-                env_kwargs.append(item)
+                )
         return np.array(env_kwargs, dtype=object)
 
     def _ensure_online_ready(self):
@@ -451,6 +438,63 @@ class DenoiseTrajectoryCollector(TrajectoryCollector):
             uid_batch.append(uid)
         return np.array(uid_batch, dtype=object)
 
+    def _run_prefix_pool_prefixes(self, obs: dict, infos, envs, reset_kwargs) -> tuple[dict, dict[str, np.ndarray]]:
+        """Replay only task-matched offline prefixes after the env reveals its gamefile."""
+        if isinstance(reset_kwargs, np.ndarray):
+            reset_kwargs = reset_kwargs.tolist()
+        reset_kwargs = reset_kwargs or []
+        batch_size = len(reset_kwargs)
+        sub_indices = [idx for group in self._sub_indices_by_group(reset_kwargs) for idx in group]
+        if not sub_indices:
+            return obs, self._init_denoise_rollout_metrics(batch_size, reset_kwargs)
+        if not hasattr(envs, "reset_selected_with_prefixes"):
+            raise NotImplementedError("prefix_pool DenoiseRL requires AlfWorldEnvironmentManager.")
+
+        gamefiles = list(getattr(envs, "gamefile", []) or [])
+        if len(gamefiles) < batch_size:
+            gamefiles = [
+                info.get("extra.gamefile") if isinstance(info, dict) else None
+                for info in (infos or [])
+            ]
+
+        replay_indices = []
+        replay_actions = []
+        skipped = 0
+        for env_idx in sub_indices:
+            gamefile = gamefiles[env_idx] if env_idx < len(gamefiles) else None
+            matches = self.prefix_pool.sample_for_task(gamefile, 1)
+            item = reset_kwargs[env_idx]
+            if not matches:
+                item["denoise_is_sub"] = False
+                item["denoise_prefix_len"] = 0
+                item.pop("denoise_prefix_source", None)
+                item.pop("denoise_prefix_task_key", None)
+                item.pop("trajectory_prefix", None)
+                skipped += 1
+                continue
+
+            prefix = matches[0]
+            replay_indices.append(env_idx)
+            replay_actions.append(prefix.actions)
+            item.update(prefix.to_env_kwargs())
+            item.update(
+                {
+                    "denoise_is_sub": True,
+                    "denoise_prefix_len": len(prefix.steps),
+                    "denoise_prefix_source": prefix.source or "prefix_pool",
+                    "denoise_prefix_task_key": prefix.task_key,
+                }
+            )
+
+        if replay_indices:
+            obs, _replay_infos = envs.reset_selected_with_prefixes(replay_indices, replay_actions)
+        if skipped:
+            print(
+                "Offline DenoiseRL skipped "
+                f"{skipped} sub-rollout(s) because no task-matched prefix was available."
+            )
+        return obs, self._init_denoise_rollout_metrics(batch_size, reset_kwargs)
+
     def _run_step_budget_prefixes(self, gen_batch: DataProto, obs: dict, envs, reset_kwargs) -> tuple[dict, dict[str, np.ndarray]]:
         self._ensure_online_ready()
         if isinstance(reset_kwargs, np.ndarray):
@@ -707,7 +751,14 @@ class DenoiseTrajectoryCollector(TrajectoryCollector):
                 batch_size=batch_size,
                 reset_kwargs=reset_kwargs,
             )
-        if self.enabled and self.mode == "online":
+        if self.enabled and self.mode == "prefix_pool":
+            obs, denoise_rollout_metrics = self._run_prefix_pool_prefixes(
+                obs=obs,
+                infos=infos,
+                envs=envs,
+                reset_kwargs=reset_kwargs,
+            )
+        elif self.enabled and self.mode == "online":
             obs, denoise_rollout_metrics = self._run_online_prefixes(
                 gen_batch=gen_batch,
                 obs=obs,

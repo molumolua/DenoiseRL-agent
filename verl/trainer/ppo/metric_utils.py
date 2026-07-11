@@ -46,6 +46,14 @@ def reduce_metrics(metrics: Dict[str, List[Any]]) -> Dict[str, Any]:
     return reduce_metrics(metrics)
 
 
+def _weighted_mean(values_and_weights) -> float:
+    """Return a sample-weighted mean for pre-aggregated batch metrics."""
+    total_weight = sum(float(weight) for _, weight in values_and_weights)
+    if total_weight <= 0:
+        raise ValueError("weighted mean requires a positive total weight")
+    return sum(float(value) * float(weight) for value, weight in values_and_weights) / total_weight
+
+
 def _compute_response_info(batch: DataProto) -> Dict[str, Any]:
     """
     Computes information about prompts and responses from a batch.
