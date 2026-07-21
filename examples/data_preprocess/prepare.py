@@ -82,10 +82,8 @@ if __name__ == '__main__':
     def make_map_fn(split):
 
         def process_fn(example, idx):
-            problem = example.pop('problem')
             prompt = instruction_following[args.mode]
             # answer = example.pop('answer')
-            images = example.pop('images')
 
             if args.mode == 'visual':
                 data = {
@@ -94,7 +92,7 @@ if __name__ == '__main__':
                         "role": "user",
                         "content": prompt,
                     }],
-                    "images": images,
+                    "images": example['images'],
                     "ability": "agent",
                     "extra_info": {
                         'split': split,
@@ -118,8 +116,22 @@ if __name__ == '__main__':
 
         return process_fn
 
-    train_dataset = train_dataset.map(function=make_map_fn('train'), with_indices=True, num_proc=8)
-    test_dataset = test_dataset.map(function=make_map_fn('test'), with_indices=True, num_proc=8)
+    # In text mode, remove the image column without reading it. Accessing it in
+    # process_fn would make datasets decode every image and unnecessarily
+    # require Pillow even though the resulting parquet contains no images.
+    remove_columns = ['problem'] if args.mode == 'visual' else ['problem', 'images']
+    train_dataset = train_dataset.map(
+        function=make_map_fn('train'),
+        with_indices=True,
+        num_proc=8,
+        remove_columns=remove_columns,
+    )
+    test_dataset = test_dataset.map(
+        function=make_map_fn('test'),
+        with_indices=True,
+        num_proc=8,
+        remove_columns=remove_columns,
+    )
 
     local_dir = args.local_dir
     hdfs_dir = args.hdfs_dir
