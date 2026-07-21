@@ -32,7 +32,7 @@ export DUMP_EXPERIMENT_NAME=${DUMP_EXPERIMENT_NAME:-${EXPERIMENT_NAME}}
 
 exec bash "${SCRIPT_DIR}/run_denoise_grpo_train_base.sh" \
   "data.shuffle=False" \
-  "data.dataloader_num_workers=0" \
+  "+data.dataloader_num_workers=0" \
   "algorithm.filter_groups.enable=False" \
   "algorithm.use_kl_in_reward=False" \
   "actor_rollout_ref.actor.use_kl_loss=False" \
