@@ -11,9 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""
-Preprocess the Geometry3k dataset to parquet format
-"""
+"""Prepare placeholder parquet files for verl-agent environments."""
 
 import os
 import datasets
@@ -22,8 +20,7 @@ try:
     from verl.utils.hdfs_io import copy, makedirs
 except ImportError:
     # Allows running this script without the full verl stack (e.g. on a
-    # no-network machine that just needs to (re)generate the parquet files
-    # from an already-downloaded HF cache).
+    # no-network machine that just needs to (re)generate text parquet files).
     import shutil
 
     def makedirs(name, mode=0o777, exist_ok=False, **kwargs):
@@ -43,13 +40,13 @@ if __name__ == '__main__':
     parser.add_argument('--hdfs_dir', default=None)
     parser.add_argument('--train_data_size', default=256, type=int)
     parser.add_argument('--val_data_size', default=256, type=int)
-    # Offline / mirror friendly: when set, datasets.load_dataset is told to use
-    # the local cache only. Also honours HF_ENDPOINT / HF_HUB_OFFLINE env vars.
+    # Visual mode still uses an external image dataset. Text mode is generated
+    # locally and never contacts the Hub.
     parser.add_argument(
         '--offline',
         action='store_true',
         default=os.getenv('HF_HUB_OFFLINE', '0') == '1',
-        help='Force datasets to use the local HF cache only (no network).',
+        help='Force visual-mode source data to use the local HF cache only.',
     )
 
     args = parser.parse_args()
@@ -57,81 +54,64 @@ if __name__ == '__main__':
     args.local_dir = os.path.join(args.local_dir, args.mode)
     os.makedirs(args.local_dir, exist_ok=True)
 
-    data_source = 'hiyouga/geometry3k'
-    """
-    **NOTE**: This is a frequently asked question.
-    We do NOT use the data in 'hiyouga/geometry3k', instead we only use it to indicate the modality and the data size.
-    See details: https://github.com/langfengQ/verl-agent?tab=readme-ov-file#2-data-preparation
-    """
-
     if args.offline:
         os.environ.setdefault('HF_HUB_OFFLINE', '1')
         os.environ.setdefault('HF_DATASETS_OFFLINE', '1')
 
-    dataset = datasets.load_dataset(data_source)
+    if args.mode == 'text':
+        # Text-mode rows are only placeholders that determine how many ALFWorld
+        # environments the trainer creates. The task text and rewards come from
+        # ALFWorld at rollout time, so no external dataset is needed here.
+        def make_text_dataset(split, size):
+            return datasets.Dataset.from_dict({
+                'answer': [''] * size,
+                'data_source': ['text'] * size,
+                'prompt': [[{'role': 'user', 'content': ''}] for _ in range(size)],
+                'ability': ['agent'] * size,
+                'extra_info': [
+                    {'split': split, 'index': idx}
+                    for idx in range(size)
+                ],
+            })
 
-    train_dataset = dataset['train'].select(range(args.train_data_size))
-    test_dataset = dataset['test'].select(range(args.val_data_size))
+        train_dataset = make_text_dataset('train', args.train_data_size)
+        test_dataset = make_text_dataset('test', args.val_data_size)
+    else:
+        # Visual mode uses Geometry3K only as a source of image-shaped rows.
+        # Its problem statements and answers are not used by the agent task.
+        dataset = datasets.load_dataset('hiyouga/geometry3k')
+        train_dataset = dataset['train'].select(range(args.train_data_size))
+        test_dataset = dataset['test'].select(range(args.val_data_size))
 
-    instruction_following = {
-        "visual": "<image>",
-        "text": "",
-        }
+        def make_visual_row(example, idx, split):
+            return {
+                'data_source': 'visual',
+                'prompt': [{
+                    'role': 'user',
+                    'content': '<image>',
+                }],
+                'images': example['images'],
+                'ability': 'agent',
+                'extra_info': {
+                    'split': split,
+                    'index': idx,
+                },
+            }
 
-    # add a row to each data item that represents a unique id
-    def make_map_fn(split):
-
-        def process_fn(example, idx):
-            prompt = instruction_following[args.mode]
-            # answer = example.pop('answer')
-
-            if args.mode == 'visual':
-                data = {
-                    "data_source": args.mode,
-                    "prompt": [{
-                        "role": "user",
-                        "content": prompt,
-                    }],
-                    "images": example['images'],
-                    "ability": "agent",
-                    "extra_info": {
-                        'split': split,
-                        'index': idx,
-                    }
-                }
-            else:
-                data = {
-                    "data_source": args.mode,
-                    "prompt": [{
-                        "role": "user",
-                        "content": prompt,
-                    }],
-                    "ability": "agent",
-                    "extra_info": {
-                        'split': split,
-                        'index': idx,
-                    }
-                }
-            return data
-
-        return process_fn
-
-    # In text mode, remove the image column without reading it. Accessing it in
-    # process_fn would make datasets decode every image and unnecessarily
-    # require Pillow even though the resulting parquet contains no images.
-    remove_columns = ['problem'] if args.mode == 'visual' else ['problem', 'images']
-    train_dataset = train_dataset.map(
-        function=make_map_fn('train'),
-        with_indices=True,
-        num_proc=8,
-        remove_columns=remove_columns,
-    )
-    test_dataset = test_dataset.map(
-        function=make_map_fn('test'),
-        with_indices=True,
-        num_proc=8,
-        remove_columns=remove_columns,
-    )
+        train_dataset = train_dataset.map(
+            function=make_visual_row,
+            fn_kwargs={'split': 'train'},
+            with_indices=True,
+            num_proc=8,
+            remove_columns=['problem'],
+        )
+        test_dataset = test_dataset.map(
+            function=make_visual_row,
+            fn_kwargs={'split': 'test'},
+            with_indices=True,
+            num_proc=8,
+            remove_columns=['problem'],
+        )
 
     local_dir = args.local_dir
     hdfs_dir = args.hdfs_dir

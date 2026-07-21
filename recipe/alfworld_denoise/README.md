@@ -83,18 +83,13 @@ recipe/alfworld_denoise/local_data/
       test.parquet
 ```
 
-`ALFWORLD_DATA` defaults to `recipe/alfworld_denoise/local_data/alfworld`. If the trainer parquet files already contain at least the requested train/validation rows, `prepare_alfworld_data` skips the Hugging Face download path. Files with too few rows are regenerated automatically; on a no-network machine, set `OFFLINE_DATA_ONLY=1` so regeneration uses only the local Hugging Face cache.
+`ALFWORLD_DATA` defaults to `recipe/alfworld_denoise/local_data/alfworld`. If the trainer parquet files already contain at least the requested train/validation rows, `prepare_alfworld_data` reuses them. Files with too few rows are regenerated locally. Text-mode parquet generation does not access Hugging Face or require a Geometry3K cache. On a no-network machine, set `OFFLINE_DATA_ONLY=1` to keep the whole training launch in offline mode.
 
 ### One-time download (on a machine with internet)
 
-`setup_data.sh --download` fetches the three ALFWorld zips from a GitHub mirror (default `githubfast.com`, much faster than `github.com` from China), extracts them, and regenerates the parquet files. Pass `--offline` so parquet generation uses the local HF cache instead of hitting `huggingface.co`.
+`setup_data.sh --download` fetches the three ALFWorld zips from a GitHub mirror (default `githubfast.com`, much faster than `github.com` from China), extracts them, and generates the parquet files locally. No Hugging Face connection or Geometry3K cache is needed.
 
 ```bash
-# Optional: pre-populate the HF cache for hiyouga/geometry3k via the HF mirror.
-# After this, --offline works without any further network access.
-export HF_ENDPOINT=https://hf-mirror.com
-python3 -c "import datasets; datasets.load_dataset('hiyouga/geometry3k')"
-
 # One shot: download (~145 MB) + extract + build parquet.
 bash recipe/alfworld_denoise/setup_data.sh --download --offline
 ```

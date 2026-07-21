@@ -11,8 +11,8 @@
 #      using the githubfast.com mirror (configurable via --mirror);
 #   2) extract them into local_data/alfworld/json_2.1.1/;
 #   3) generate local_data/verl_agent/text/{train,test}.parquet via
-#      examples.data_preprocess.prepare, with HF_HUB_OFFLINE=1 so it uses
-#      the local HF cache instead of hitting huggingface.co.
+#      examples.data_preprocess.prepare. Text-mode parquet rows are generated
+#      locally and do not require Hugging Face data or cache access.
 #
 # On a no-network cluster, rsync local_data/ up first, then run with
 # `--skip-extract` (or no flags at all -- it just verifies).
@@ -31,7 +31,7 @@
 #   --skip-extract        Skip extracting the alfworld zips.
 #   --skip-parquet        Skip (re)generating verl_agent parquet files.
 #   --force-parquet       Regenerate parquet even if it already exists.
-#   --offline             Force HF offline mode when generating parquet.
+#   --offline             Force offline mode (text parquet is always local).
 #   --train-size N        Train parquet row count (default: 16, matches params.sh).
 #   --val-size N          Val/test parquet row count (default: 140, covers both val splits).
 #   -h, --help            Show this help.
