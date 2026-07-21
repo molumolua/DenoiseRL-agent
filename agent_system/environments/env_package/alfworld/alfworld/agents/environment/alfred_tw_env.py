@@ -50,6 +50,15 @@ class AlfredInfos(textworld.core.Wrapper):
         state["extra.gamefile"] = self._gamefile
         return state
 
+    def step(self, *args, **kwargs):
+        state, reward, done = super().step(*args, **kwargs)
+        # The gamefile identifies the loaded game rather than a particular
+        # state, so keep exposing it after actions as well as after reset.
+        # Prefix replay returns the final step's infos; without this, pinned
+        # resets appear to have switched from the requested gamefile to None.
+        state["extra.gamefile"] = self._gamefile
+        return state, reward, done
+
 
 # Enum for the supported types of AlfredExpert.
 class AlfredExpertType:
