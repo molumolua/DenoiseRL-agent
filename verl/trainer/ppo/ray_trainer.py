@@ -1335,6 +1335,14 @@ class RayPPOTrainer:
                         actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
                         metrics.update(actor_output_metrics)
 
+                    # A trajectory collector may own curriculum state that must
+                    # advance only after this rollout has been trained.
+                    after_training_step = getattr(self.traj_collector, "after_training_step", None)
+                    if after_training_step is not None:
+                        collector_metrics = after_training_step(batch)
+                        if collector_metrics:
+                            metrics.update(collector_metrics)
+
                     # Log rollout generations if enabled
                     rollout_data_dir = self.config.trainer.get("rollout_data_dir", None)
                     if rollout_data_dir:

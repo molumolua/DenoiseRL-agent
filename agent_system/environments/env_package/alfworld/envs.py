@@ -157,6 +157,9 @@ class AlfworldEnvs(gym.Env):
         base_env = get_environment(env_type)(config, train_eval='train' if is_train else eval_dataset)
         self.multi_modal = (env_type == 'AlfredThorEnv')
         self.num_games = base_env.num_games
+        # Expose AlfredTWEnv's concrete training pool to curriculum-driven
+        # collectors. Other backends keep an empty tuple.
+        self.game_files = tuple(getattr(base_env, "game_files", ()))
         env_num = min(env_num, self.num_games) if not is_train else env_num
         self.num_processes = env_num * group_n
         self.group_n = group_n
