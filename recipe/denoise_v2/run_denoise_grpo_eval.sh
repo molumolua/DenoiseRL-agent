@@ -16,7 +16,7 @@ if [ -z "${CKPT_DIR:-}" ]; then
   exit 1
 fi
 
-if [[ -d "${CKPT_DIR}/actor" && "$(basename "${CKPT_DIR}")" == global_step_* ]]; then
+if [[ -d "${CKPT_DIR}/actor" && "$(basename "${CKPT_DIR}")" =~ ^global_step_[0-9]+$ ]]; then
   RESUME_PATH=${CKPT_DIR}
 elif [[ -f "${CKPT_DIR}/latest_checkpointed_iteration.txt" ]]; then
   IFS= read -r CHECKPOINT_STEP < "${CKPT_DIR}/latest_checkpointed_iteration.txt" || true
