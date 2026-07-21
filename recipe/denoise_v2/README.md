@@ -2,6 +2,25 @@
 
 This recipe is the agent counterpart of the mathematical `recipe/denoise_v2` algorithm. It uses an ordered pool of concrete ALFWorld gamefiles, an active batch, and an independent dynamic noise state for every active gamefile.
 
+## Complete seen/unseen evaluation
+
+Run exhaustive evaluation from either an experiment checkpoint root or one
+specific `global_step_*` directory:
+
+```bash
+CKPT_DIR=checkpoints/verl_agent_alfworld_denoise_v2/<experiment> \
+  bash recipe/denoise_v2/run_denoise_grpo_eval.sh
+```
+
+The default `EVAL_SPLIT=both` evaluates every supported, solvable gamefile in
+`valid_seen` and `valid_unseen` exactly once when `VAL_N=1`. Every reset is
+pinned to a concrete gamefile. Validation fails on a missing, duplicate, or
+unexpected gamefile, reports `gamefile_count`, `gamefile_episode_count`,
+`gamefile_unique_count`, and `gamefile_coverage` under each split, and writes the
+gamefile path with one collapsed solver trajectory into every validation JSONL
+row. This is a clean policy evaluation from each task's initial state; the
+training-time denoiser and curriculum state are not needed for inference.
+
 ## What a gamefile represents
 
 The bundled train directory contains 2,435 task-configuration directories and 4,652 raw `game.tw-pddl` trials. The current `AlfredTWEnv` filters out 1,086 trials marked unsolvable and 13 movable/sliced trials, leaving an effective pool of 3,553 gamefiles across 6 supported high-level task families. A gamefile identifies one fully instantiated task: task family, target object/receptacle, scene, concrete object placement, and initial state.

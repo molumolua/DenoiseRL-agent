@@ -37,7 +37,25 @@ For example, `MODEL_PATH=Qwen/Qwen2.5-7B-Instruct` becomes `/inspire/hdd/global_
 
 The default prompt length is intentionally lower than long-horizon AppWorld-style settings: ALFWorld prompts are mostly task text plus compact action history, so `4096 / 512` is usually a better first budget than a very long context. If you increase `HISTORY_LENGTH` or keep verbose observations, override `PROMPT_LENGTH` and `MAX_MODEL_LEN` together.
 
-During validation, `valid_seen` and `valid_unseen` are evaluated with separate ALFWorld envs when `EVAL_SPLIT=both`. Override with `EVAL_SPLIT=seen` or `EVAL_SPLIT=unseen` to evaluate only one split.
+## Complete seen/unseen evaluation
+
+Every evaluation entry point defaults to `EVAL_SPLIT=both` and exhaustively
+evaluates the complete supported, solvable gamefile pools in `valid_seen` and
+`valid_unseen`. Each reset is pinned to one concrete gamefile; evaluation fails
+if a gamefile is missing, duplicated, or replaced with an unexpected task.
+With `VAL_N=1`, every gamefile is evaluated exactly once. Override with
+`EVAL_SPLIT=seen` or `EVAL_SPLIT=unseen` to run only one split.
+
+The split-specific logs include `gamefile_count`, `gamefile_episode_count`,
+`gamefile_unique_count`, and `gamefile_coverage`, for example
+`val/seen/gamefile_coverage` and `val/unseen/gamefile_coverage`. Validation
+JSONL output contains one collapsed solver trajectory per row together with its
+exact `gamefile` path.
+
+`CKPT_DIR` may point either to an experiment root containing
+`latest_checkpointed_iteration.txt` or directly to a numbered
+`global_step_*/actor` checkpoint. Evaluation fails before inference when that
+checkpoint cannot be resolved, so it cannot silently evaluate the base model.
 
 ## Offline Data
 
@@ -119,7 +137,7 @@ bash recipe/alfworld_denoise/run_grpo_train.sh
 bash recipe/alfworld_denoise/run_dapo_train.sh
 ```
 
-Evaluate checkpoints:
+Evaluate checkpoints exhaustively on both splits:
 
 ```bash
 CKPT_DIR=checkpoints/verl_agent_alfworld_unified/grpo_qwen2.5_7b_unified \
@@ -142,6 +160,20 @@ bash recipe/alfworld_denoise/run_denoise_grpo_train.sh
 
 bash recipe/alfworld_denoise/run_denoise_dapo_train.sh
 ```
+
+Evaluate DenoiseRL checkpoints exhaustively on both splits:
+
+```bash
+CKPT_DIR=checkpoints/verl_agent_alfworld_unified/denoise_grpo_qwen2.5_7b_1.5b_unified \
+bash recipe/alfworld_denoise/run_denoise_grpo_eval.sh
+
+CKPT_DIR=checkpoints/verl_agent_alfworld_unified/denoise_dapo_qwen2.5_7b_1.5b_unified \
+bash recipe/alfworld_denoise/run_denoise_dapo_eval.sh
+```
+
+These are clean solver-policy evaluations from each task's initial state. The
+training-time online denoiser is deliberately not loaded, so
+`DENOISE_MODEL_PATH` is not required for evaluation.
 
 Useful online knobs:
 

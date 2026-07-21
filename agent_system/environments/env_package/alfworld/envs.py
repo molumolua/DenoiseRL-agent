@@ -264,9 +264,15 @@ class AlfworldEnvs(gym.Env):
         text_obs_list = []
         info_list = []
         results = ray.get(futures)
-        for idx, (obs, info) in zip(indices, results):
+        for idx, item, (obs, info) in zip(indices, kwargs, results):
             for k in info.keys():
                 info[k] = info[k][0]
+            requested_gamefile = (item or {}).get("gamefile") or (item or {}).get("extra.gamefile")
+            if requested_gamefile and info.get("extra.gamefile") != requested_gamefile:
+                raise RuntimeError(
+                    "ALFWorld reset returned the wrong gamefile: "
+                    f"requested={requested_gamefile!r}, actual={info.get('extra.gamefile')!r}."
+                )
             text_obs_list.append(obs[0])
             self.prev_admissible_commands[idx] = info['admissible_commands']
             info_list.append(info)
@@ -318,6 +324,12 @@ class AlfworldEnvs(gym.Env):
         for i, (obs, info) in enumerate(results):
             for k in info.keys():
                 info[k] = info[k][0] 
+            requested_gamefile = reset_kwargs[i].get("gamefile") or reset_kwargs[i].get("extra.gamefile")
+            if requested_gamefile and info.get("extra.gamefile") != requested_gamefile:
+                raise RuntimeError(
+                    "ALFWorld reset returned the wrong gamefile: "
+                    f"requested={requested_gamefile!r}, actual={info.get('extra.gamefile')!r}."
+                )
             text_obs_list.append(obs[0])
             self.prev_admissible_commands[i] = info['admissible_commands']
             info_list.append(info)

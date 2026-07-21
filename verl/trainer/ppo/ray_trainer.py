@@ -710,15 +710,24 @@ class RayPPOTrainer:
         return self._validate_single(val_envs=self.val_envs)
 
     def _validate_single(self, val_envs, split_name=None):
+        from agent_system.alfworld_evaluation import (
+            build_gamefile_reset_kwargs,
+            collapse_trajectory_rows,
+            ordered_validation_gamefiles,
+            validate_gamefile_coverage,
+        )
+
         reward_tensor_lst = []
         data_source_lst = []
         tool_calling_list = []
         traj_uid_list = []
         success_rate_dict = {}
         processed_samples = 0
-        sample_limit = self._validation_sample_limit(val_envs)
+        validation_gamefiles = ordered_validation_gamefiles(val_envs)
+        sample_limit = len(validation_gamefiles) or self._validation_sample_limit(val_envs)
         max_env_batch_size = self._validation_env_batch_size(val_envs)
         val_n = int(self.config.actor_rollout_ref.rollout.val_kwargs.n)
+        observed_validation_gamefiles = []
         max_prompt_batch_size = None
         if max_env_batch_size is not None:
             max_prompt_batch_size = max_env_batch_size // max(val_n, 1)
@@ -746,6 +755,7 @@ class RayPPOTrainer:
                 if remaining_batch <= 0:
                     break
 
+                validation_batch_start = processed_samples
                 test_batch = full_test_batch[batch_start:batch_start + remaining_batch]
                 batch_start += remaining_batch
                 processed_samples += len(test_batch)
@@ -777,6 +787,18 @@ class RayPPOTrainer:
                     batch_keys=batch_keys_to_pop,
                     non_tensor_batch_keys=non_tensor_batch_keys_to_pop,
                 )
+                validation_env_kwargs = ()
+                if validation_gamefiles:
+                    validation_env_kwargs = build_gamefile_reset_kwargs(
+                        validation_gamefiles,
+                        start=validation_batch_start,
+                        count=remaining_batch,
+                        repeats=val_n,
+                    )
+                    test_gen_batch.non_tensor_batch["env_kwargs"] = np.asarray(
+                        validation_env_kwargs,
+                        dtype=object,
+                    )
 
                 test_gen_batch.meta_info = {
                     "eos_token_id": self.tokenizer.eos_token_id,
@@ -807,7 +829,6 @@ class RayPPOTrainer:
                 # Store generated outputs
                 output_ids = test_output_gen_batch.batch["responses"]
                 output_texts = [self.tokenizer.decode(ids, skip_special_tokens=True) for ids in output_ids]
-                sample_outputs.extend(output_texts)
 
                 # test_batch = test_batch.union(test_output_gen_batch)
 
@@ -815,13 +836,37 @@ class RayPPOTrainer:
                 result = self.val_reward_fn(test_batch, return_dict=True)
                 reward_tensor = result["reward_tensor"]
                 scores = reward_tensor.sum(-1).cpu().tolist()
-                sample_scores.extend(scores)
+                (
+                    ordered_batch_traj_uids,
+                    episode_output_texts,
+                    episode_scores,
+                ) = collapse_trajectory_rows(
+                    test_output_gen_batch.non_tensor_batch['traj_uid'],
+                    output_texts,
+                    scores,
+                )
+                if len(input_texts) != len(ordered_batch_traj_uids):
+                    raise RuntimeError(
+                        "Validation prompts and trajectories are misaligned: "
+                        f"prompts={len(input_texts)}, trajectories={len(ordered_batch_traj_uids)}."
+                    )
+                sample_outputs.extend(episode_output_texts)
+                sample_scores.extend(episode_scores)
 
                 reward_tensor_lst.append(reward_tensor)
                 data_source_lst.append(test_batch.non_tensor_batch.get('data_source', ['unknown'] * reward_tensor.shape[0]))
                 tool_calling_list.append(test_output_gen_batch.non_tensor_batch['tool_callings'])
                 traj_uid_list.append(test_output_gen_batch.non_tensor_batch['traj_uid'])
-                batch_traj_count = len(np.unique(test_output_gen_batch.non_tensor_batch['traj_uid']))
+                batch_traj_count = len(ordered_batch_traj_uids)
+                if validation_env_kwargs:
+                    if batch_traj_count != len(validation_env_kwargs):
+                        raise RuntimeError(
+                            "ALFWorld validation returned the wrong number of trajectories: "
+                            f"expected={len(validation_env_kwargs)}, actual={batch_traj_count}."
+                        )
+                    observed_validation_gamefiles.extend(
+                        item["validation_gamefile"] for item in validation_env_kwargs
+                    )
                 # success rate
                 for k in test_batch.non_tensor_batch.keys():
                     if 'success_rate' in k:
@@ -843,17 +888,33 @@ class RayPPOTrainer:
             if sample_limit is not None and processed_samples >= sample_limit:
                 break
 
+        coverage_metrics = {}
+        if validation_gamefiles:
+            coverage_metrics = validate_gamefile_coverage(
+                validation_gamefiles,
+                observed_validation_gamefiles,
+                repeats=val_n,
+            )
+            split_label = split_name or "alfworld"
+            print(
+                f"[validation] {split_label}: exhaustive ALFWorld coverage verified; "
+                f"unique={len(validation_gamefiles)}, episodes={len(observed_validation_gamefiles)}."
+            )
+
         self._maybe_log_val_generations(inputs=sample_inputs, outputs=sample_outputs, scores=sample_scores)
 
         # dump validation generations if enabled
         val_data_dir = self.config.trainer.get("validation_data_dir", None)
         if val_data_dir:
             dump_path = os.path.join(val_data_dir, split_name) if split_name else val_data_dir
+            validation_extra_infos = {}
+            if validation_gamefiles:
+                validation_extra_infos["gamefile"] = observed_validation_gamefiles
             self._dump_generations(
                 inputs=sample_inputs,
                 outputs=sample_outputs,
                 scores=sample_scores,
-                reward_extra_infos_dict={},
+                reward_extra_infos_dict=validation_extra_infos,
                 dump_path=dump_path,
             )
 
@@ -906,6 +967,9 @@ class RayPPOTrainer:
 
         for k, v in success_rate.items():
             metric_dict[f'val/{k}'] = v
+
+        for key, value in coverage_metrics.items():
+            metric_dict[f'val/{key}'] = value
 
         return metric_dict
 
