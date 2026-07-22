@@ -1,5 +1,7 @@
+import json
 import uuid
 from collections import defaultdict
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -12,7 +14,7 @@ from verl.utils.dataset.rl_dataset import collate_fn
 from verl.utils.model import compute_position_id_with_mask
 import verl.utils.torch_functional as verl_F
 
-from recipe.denoise_v2.gamefile_curriculum import GamefilePoolCurriculum
+from recipe.denoise_v2.gamefile_curriculum import TaskTypePoolCurriculum
 from recipe.denoise_v2.trajectory_prefix import PrefixPool
 
 
@@ -77,8 +79,31 @@ class DenoiseTrajectoryCollector(TrajectoryCollector):
             require_failed=bool(denoise_cfg.get("require_failed_prefixes", True)),
         )
 
-    def configure_v2(self, game_files) -> None:
-        """Bind v2 to the complete ordered ALFWorld gamefile pool."""
+    @staticmethod
+    def _resolve_gamefile_task_types(game_files, supplied_mapping=None) -> dict[str, str]:
+        resolved = {
+            str(gamefile): str(task_type)
+            for gamefile, task_type in (supplied_mapping or {}).items()
+        }
+        for gamefile in game_files:
+            if gamefile in resolved:
+                continue
+            trajectory_path = Path(gamefile).with_name("traj_data.json")
+            if not trajectory_path.exists():
+                raise ValueError(
+                    "DenoiseRL v2 requires a task type for every gamefile; missing "
+                    f"metadata for {gamefile!r}."
+                )
+            with trajectory_path.open("r", encoding="utf-8") as trajectory_file:
+                trajectory = json.load(trajectory_file)
+            task_type = trajectory.get("task_type")
+            if not task_type:
+                raise ValueError(f"ALFWorld trajectory has no task_type: {trajectory_path}")
+            resolved[gamefile] = str(task_type)
+        return {gamefile: resolved[gamefile] for gamefile in game_files}
+
+    def configure_v2(self, game_files, gamefile_task_types=None) -> None:
+        """Bind v2 to the complete ALFWorld gamefile pool and task metadata."""
         if not self.v2_enabled:
             return
         if not self.enabled or self.mode != "online":
@@ -101,8 +126,8 @@ class DenoiseTrajectoryCollector(TrajectoryCollector):
         if self._as_bool(self.config.algorithm.filter_groups.get("enable", False)):
             raise ValueError("DenoiseRL v2 is incompatible with algorithm.filter_groups.enable=True.")
 
-        # The source comes from AlfredTWEnv. Sorting makes pool traversal and
-        # checkpoint identity deterministic across os.walk/platform order.
+        # Sorting makes checkpoint dataset identity deterministic. The curriculum
+        # itself shuffles this pool once per epoch.
         ordered_game_files = tuple(sorted(str(path) for path in (game_files or ())))
         if not ordered_game_files:
             raise ValueError(
@@ -111,6 +136,10 @@ class DenoiseTrajectoryCollector(TrajectoryCollector):
             )
         if len(set(ordered_game_files)) != len(ordered_game_files):
             raise ValueError("DenoiseRL v2 requires unique gamefiles in the training pool.")
+        task_types = self._resolve_gamefile_task_types(
+            ordered_game_files,
+            gamefile_task_types,
+        )
 
         active_batch_size = int(self.config.data.train_batch_size)
         gen_batch_size = int(self.config.data.get("gen_batch_size", active_batch_size))
@@ -118,30 +147,35 @@ class DenoiseTrajectoryCollector(TrajectoryCollector):
             raise ValueError(
                 "DenoiseRL v2 requires data.gen_batch_size == data.train_batch_size."
             )
-        self.v2_curriculum = GamefilePoolCurriculum(
+        self.v2_curriculum = TaskTypePoolCurriculum(
             problem_ids=ordered_game_files,
+            problem_id_to_task_type=task_types,
             batch_size=active_batch_size,
             initial_rho=self.v2_cfg.get("initial_rho", 0.0),
             min_rho=self.v2_cfg.get("min_rho", 0.0),
             max_rho=self.v2_cfg.get("max_rho", 0.5),
             target_accuracy=self.v2_cfg.get("target_accuracy", 0.75),
             alpha=self.v2_cfg.get("alpha", 0.2),
-            history_window=self.v2_cfg.get("history_window", 10),
-            min_history=self.v2_cfg.get("min_history", 2),
-            slope_threshold=self.v2_cfg.get("slope_threshold", 0.0075),
+            shuffle_seed=self.v2_cfg.get(
+                "shuffle_seed",
+                self.config.env.get("seed", 0),
+            ),
         )
+        task_type_counts = {
+            task_type: sum(1 for value in task_types.values() if value == task_type)
+            for task_type in self.v2_curriculum.task_types
+        }
         print(
-            "[denoise v2] ordered gamefile pool enabled: "
+            "[denoise v2] fresh-gamefile task-type curriculum enabled: "
             f"pool_size={self.v2_curriculum.pool_size}, "
             f"active_batch_size={self.v2_curriculum.batch_size}, "
             "noise_rollouts_per_gamefile=16, "
+            f"task_type_counts={task_type_counts}, "
             f"initial_rho={self.v2_curriculum.initial_rho}, "
             f"rho_range=[{self.v2_curriculum.min_rho}, {self.v2_curriculum.max_rho}], "
             f"target_accuracy={self.v2_curriculum.target_accuracy}, "
             f"alpha={self.v2_curriculum.alpha}, "
-            f"history_window={self.v2_curriculum.history_window}, "
-            f"min_history={self.v2_curriculum.min_history}, "
-            f"slope_abs_threshold={self.v2_curriculum.slope_threshold}."
+            f"shuffle_seed={self.v2_curriculum.shuffle_seed}."
         )
 
     def v2_state_dict(self) -> dict:
@@ -248,10 +282,12 @@ class DenoiseTrajectoryCollector(TrajectoryCollector):
             group_metadata = {}
             if active_gamefiles is not None:
                 gamefile = active_gamefiles[group_idx]
+                task_type = self.v2_curriculum.task_type_for_problem(gamefile)
                 group_metadata = {
                     # Pin all 16 workers in this group to the active gamefile.
                     "gamefile": gamefile,
                     "denoise_v2_problem_id": gamefile,
+                    "denoise_v2_task_type": task_type,
                     "denoise_v2_rho": self.v2_curriculum.rho_for_problem(gamefile),
                 }
             for _main_idx in range(self.main_rollout_n):
@@ -465,6 +501,7 @@ class DenoiseTrajectoryCollector(TrajectoryCollector):
         prefix_lens = np.zeros(batch_size, dtype=np.float32)
         sources = np.array(["clean" for _ in range(batch_size)], dtype=object)
         v2_problem_ids = np.array([None for _ in range(batch_size)], dtype=object)
+        v2_task_types = np.array([None for _ in range(batch_size)], dtype=object)
         v2_rhos = np.zeros(batch_size, dtype=np.float32)
         has_v2_metadata = False
         for i in range(batch_size):
@@ -476,6 +513,7 @@ class DenoiseTrajectoryCollector(TrajectoryCollector):
                 if "denoise_v2_problem_id" in item:
                     has_v2_metadata = True
                     v2_problem_ids[i] = item["denoise_v2_problem_id"]
+                    v2_task_types[i] = item.get("denoise_v2_task_type")
                     v2_rhos[i] = float(item.get("denoise_v2_rho", 0.0))
 
         metrics = {
@@ -493,6 +531,7 @@ class DenoiseTrajectoryCollector(TrajectoryCollector):
         }
         if has_v2_metadata:
             metrics["denoise_v2_problem_id"] = v2_problem_ids
+            metrics["denoise_v2_task_type"] = v2_task_types
             metrics["denoise_v2_rho"] = v2_rhos
         return metrics
 
@@ -1008,14 +1047,19 @@ class DenoiseTrajectoryCollector(TrajectoryCollector):
         return total_batch_list, episode_rewards, episode_lengths, success, traj_uid, tool_callings
 
     def after_training_step(self, batch: DataProto) -> dict[str, float]:
-        """Update active gamefiles, then retire and replace slope-stable rows."""
+        """Update task-type rhos, then replace every trained gamefile."""
         if not self.v2_enabled:
             return {}
         if self.v2_curriculum is None:
             raise RuntimeError("DenoiseRL v2 curriculum has not been configured.")
 
         non_tensor = batch.non_tensor_batch
-        required = ("traj_uid", "denoise_v2_problem_id", "episode_success")
+        required = (
+            "traj_uid",
+            "denoise_v2_problem_id",
+            "denoise_v2_task_type",
+            "episode_success",
+        )
         missing = [key for key in required if key not in non_tensor]
         if missing:
             raise ValueError(f"DenoiseRL v2 training batch is missing metadata: {missing}.")
@@ -1024,10 +1068,18 @@ class DenoiseTrajectoryCollector(TrajectoryCollector):
         # traj_uid so success is averaged over rollouts rather than time steps.
         _unique_uids, unique_idx = np.unique(non_tensor["traj_uid"], return_index=True)
         gamefiles = np.asarray(non_tensor["denoise_v2_problem_id"], dtype=object)[unique_idx]
+        task_types = np.asarray(non_tensor["denoise_v2_task_type"], dtype=object)[unique_idx]
         successes = np.asarray(non_tensor["episode_success"], dtype=np.float64)[unique_idx]
 
         grouped_successes = defaultdict(list)
-        for gamefile, success in zip(gamefiles, successes):
+        for gamefile, task_type, success in zip(gamefiles, task_types, successes):
+            expected_task_type = self.v2_curriculum.task_type_for_problem(gamefile)
+            if task_type != expected_task_type:
+                raise ValueError(
+                    "DenoiseRL v2 rollout task type does not match its gamefile: "
+                    f"gamefile={gamefile!r}, expected={expected_task_type!r}, "
+                    f"observed={task_type!r}."
+                )
             grouped_successes[gamefile].append(float(success))
 
         active_gamefiles = self.v2_curriculum.active_problem_ids

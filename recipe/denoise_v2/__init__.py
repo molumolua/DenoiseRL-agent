@@ -1,1 +1,1 @@
-"""ALFWorld DenoiseRL v2 with an ordered, slope-driven gamefile pool."""
+"""ALFWorld DenoiseRL v2 with fresh gamefiles and task-type noise states."""

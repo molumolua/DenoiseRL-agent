@@ -165,6 +165,9 @@ class AlfworldEnvs(gym.Env):
         # Expose AlfredTWEnv's concrete training pool to curriculum-driven
         # collectors. Other backends keep an empty tuple.
         self.game_files = tuple(getattr(base_env, "game_files", ()))
+        self.game_file_task_types = dict(
+            getattr(base_env, "game_file_task_types", {})
+        )
         env_num = min(env_num, self.num_games) if not is_train else env_num
         self.num_processes = env_num * group_n
         self.group_n = group_n

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Agent analogue of the mathematical DenoiseRL v2 recipe: an ordered gamefile
-# pool, one active batch, and slope-driven retirement/replacement.
+# ALFWorld DenoiseRL v2: fresh gamefiles every optimizer step and one dynamic
+# rho shared by all gamefiles of the same task type.
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 export MAIN_ROLLOUT_N=0
@@ -18,15 +18,13 @@ V2_MIN_RHO=${V2_MIN_RHO:-0.0}
 V2_MAX_RHO=${V2_MAX_RHO:-0.5}
 V2_TARGET_ACCURACY=${V2_TARGET_ACCURACY:-0.75}
 V2_ALPHA=${V2_ALPHA:-0.2}
-V2_HISTORY_WINDOW=${V2_HISTORY_WINDOW:-5}
-V2_MIN_HISTORY=${V2_MIN_HISTORY:-2}
-V2_SLOPE_THRESHOLD=${V2_SLOPE_THRESHOLD:-0.005}
+V2_SHUFFLE_SEED=${V2_SHUFFLE_SEED:-${SEED:-0}}
 
 # The legacy scalar is ignored while v2 is enabled, but keeping it aligned with
 # the initial rho makes the fully resolved Hydra config easier to inspect.
 export DENOISE_PREFIX_RATIO=${V2_INITIAL_RHO}
 export PROJECT_NAME=${PROJECT_NAME:-verl_agent_alfworld_denoise_v2}
-RUN_TAG="rho${V2_INITIAL_RHO}-${V2_MAX_RHO}_target${V2_TARGET_ACCURACY}_alpha${V2_ALPHA}_window${V2_HISTORY_WINDOW}_slope${V2_SLOPE_THRESHOLD}"
+RUN_TAG="taskrho${V2_INITIAL_RHO}-${V2_MAX_RHO}_target${V2_TARGET_ACCURACY}_alpha${V2_ALPHA}_seed${V2_SHUFFLE_SEED}"
 export EXPERIMENT_NAME=${EXPERIMENT_NAME:-denoise_grpo_v2_qwen2.5_7b_1.5b_bsz${TRAIN_BATCH_SIZE:-16}_k16_${RUN_TAG}}
 export DUMP_EXPERIMENT_NAME=${DUMP_EXPERIMENT_NAME:-${EXPERIMENT_NAME}}
 
@@ -43,7 +41,5 @@ exec bash "${SCRIPT_DIR}/run_denoise_grpo_train_base.sh" \
   "env.denoise.v2.max_rho=${V2_MAX_RHO}" \
   "env.denoise.v2.target_accuracy=${V2_TARGET_ACCURACY}" \
   "env.denoise.v2.alpha=${V2_ALPHA}" \
-  "env.denoise.v2.history_window=${V2_HISTORY_WINDOW}" \
-  "env.denoise.v2.min_history=${V2_MIN_HISTORY}" \
-  "env.denoise.v2.slope_threshold=${V2_SLOPE_THRESHOLD}" \
+  "env.denoise.v2.shuffle_seed=${V2_SHUFFLE_SEED}" \
   "$@"

@@ -142,6 +142,7 @@ class AlfredTWEnv(object):
                 print(info)
 
         self.game_files = []
+        self.game_file_task_types = {}
 
         if self.train_eval == "train":
             data_path = os.path.expandvars(self.config['dataset']['data_path'])
@@ -200,6 +201,7 @@ class AlfredTWEnv(object):
 
                 # Add to game file list
                 self.game_files.append(game_file_path)
+                self.game_file_task_types[game_file_path] = traj_data['task_type']
 
         print(f"Overall we have {len(self.game_files)} games in split={self.train_eval}")
         self.num_games = len(self.game_files)
@@ -207,11 +209,19 @@ class AlfredTWEnv(object):
         if self.train_eval == "train":
             num_train_games = self.config['dataset']['num_train_games'] if self.config['dataset']['num_train_games'] > 0 else len(self.game_files)
             self.game_files = self.game_files[:num_train_games]
+            self.game_file_task_types = {
+                game_file: self.game_file_task_types[game_file]
+                for game_file in self.game_files
+            }
             self.num_games = len(self.game_files)
             print("Training with %d games" % (len(self.game_files)))
         else:
             num_eval_games = self.config['dataset']['num_eval_games'] if self.config['dataset']['num_eval_games'] > 0 else len(self.game_files)
             self.game_files = self.game_files[:num_eval_games]
+            self.game_file_task_types = {
+                game_file: self.game_file_task_types[game_file]
+                for game_file in self.game_files
+            }
             self.num_games = len(self.game_files)
             print("Evaluating with %d games" % (len(self.game_files)))
 

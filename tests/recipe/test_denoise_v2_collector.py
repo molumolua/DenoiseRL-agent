@@ -9,6 +9,14 @@ class ConfigDict(dict):
     __getattr__ = dict.__getitem__
 
 
+GAMEFILE_TASK_TYPES = {
+    "game/a": "pick_and_place_simple",
+    "game/b": "pick_heat_then_place_in_recep",
+    "game/c": "pick_and_place_simple",
+    "game/d": "pick_heat_then_place_in_recep",
+}
+
+
 def _collector():
     collector = DenoiseTrajectoryCollector.__new__(DenoiseTrajectoryCollector)
     collector.v2_enabled = True
@@ -24,20 +32,18 @@ def _collector():
         "max_rho": 0.5,
         "target_accuracy": 0.75,
         "alpha": 0.2,
-        "history_window": 10,
-        "min_history": 2,
-        "slope_threshold": 0.0075,
+        "shuffle_seed": 11,
     }
     collector.config = ConfigDict(
-        env=ConfigDict(rollout=ConfigDict(n=16)),
+        env=ConfigDict(seed=11, rollout=ConfigDict(n=16)),
         data=ConfigDict(train_batch_size=2, gen_batch_size=2),
         algorithm=ConfigDict(filter_groups=ConfigDict(enable=False)),
     )
-    collector.configure_v2(["game/c", "game/a", "game/b"])
+    collector.configure_v2(GAMEFILE_TASK_TYPES, GAMEFILE_TASK_TYPES)
     return collector
 
 
-def _training_batch(step, gamefiles, successes):
+def _training_batch(step, gamefiles, task_types, successes):
     # Repeat each trajectory to emulate two action rows. Curriculum accuracy
     # must be calculated from 16 unique trajectories per active gamefile.
     traj_uids = np.repeat(
@@ -48,36 +54,57 @@ def _training_batch(step, gamefiles, successes):
         non_tensor_batch={
             "traj_uid": traj_uids,
             "denoise_v2_problem_id": np.repeat(np.asarray(gamefiles, dtype=object), 2),
+            "denoise_v2_task_type": np.repeat(np.asarray(task_types, dtype=object), 2),
             "episode_success": np.repeat(np.asarray(successes, dtype=float), 2),
         }
     )
 
 
-def test_configure_sorts_pool_and_pins_one_gamefile_per_group():
+def test_configure_shuffles_pool_and_pins_task_type_rho_per_group():
     collector = _collector()
 
-    assert collector.v2_curriculum.problem_ids == ("game/a", "game/b", "game/c")
-    assert collector.v2_curriculum.active_problem_ids == ("game/a", "game/b")
+    assert collector.v2_curriculum.problem_ids == (
+        "game/a",
+        "game/b",
+        "game/c",
+        "game/d",
+    )
+    active = collector.v2_curriculum.active_problem_ids
+    assert len(active) == 2
+    assert len(set(active)) == 2
 
     reset_kwargs = collector._build_env_kwargs(32)
-    assert all(item["gamefile"] == "game/a" for item in reset_kwargs[:16])
-    assert all(item["gamefile"] == "game/b" for item in reset_kwargs[16:])
-    assert all(item["denoise_v2_rho"] == 0.0 for item in reset_kwargs)
+    for group_idx, gamefile in enumerate(active):
+        group = reset_kwargs[group_idx * 16 : (group_idx + 1) * 16]
+        assert all(item["gamefile"] == gamefile for item in group)
+        assert all(item["denoise_v2_problem_id"] == gamefile for item in group)
+        assert all(
+            item["denoise_v2_task_type"] == GAMEFILE_TASK_TYPES[gamefile]
+            for item in group
+        )
+        assert all(item["denoise_v2_rho"] == 0.0 for item in group)
 
 
-def test_after_training_step_retires_stable_gamefile_and_advances_pool():
+def test_after_one_training_step_updates_task_types_and_replaces_every_gamefile():
     collector = _collector()
-    gamefiles = ["game/a"] * 16 + ["game/b"] * 16
-    successes = [0.75] * 32
+    first_active = collector.v2_curriculum.active_problem_ids
+    gamefiles = [gamefile for gamefile in first_active for _ in range(16)]
+    task_types = [GAMEFILE_TASK_TYPES[gamefile] for gamefile in gamefiles]
+    successes = [1.0] * len(gamefiles)
 
-    first = collector.after_training_step(_training_batch(0, gamefiles, successes))
-    second = collector.after_training_step(_training_batch(1, gamefiles, successes))
+    metrics = collector.after_training_step(
+        _training_batch(0, gamefiles, task_types, successes)
+    )
 
-    assert first["denoise/v2/replaced_this_step"] == 0.0
-    assert second["denoise/v2/stable_candidates"] == 2.0
-    assert second["denoise/v2/replaced_this_step"] == 1.0
-    assert collector.v2_curriculum.active_problem_ids == ("game/c", "game/b")
+    second_active = collector.v2_curriculum.active_problem_ids
+    assert set(first_active).isdisjoint(second_active)
+    assert metrics["denoise/v2/replaced_this_step"] == 2.0
+    for task_type in set(task_types):
+        assert np.isclose(collector.v2_curriculum.rho_for_task_type(task_type), 0.05)
 
     next_kwargs = collector._build_env_kwargs(32)
-    assert all(item["gamefile"] == "game/c" for item in next_kwargs[:16])
-    assert all(item["gamefile"] == "game/b" for item in next_kwargs[16:])
+    for group_idx, gamefile in enumerate(second_active):
+        expected_rho = collector.v2_curriculum.rho_for_problem(gamefile)
+        group = next_kwargs[group_idx * 16 : (group_idx + 1) * 16]
+        assert all(item["gamefile"] == gamefile for item in group)
+        assert all(item["denoise_v2_rho"] == expected_rho for item in group)

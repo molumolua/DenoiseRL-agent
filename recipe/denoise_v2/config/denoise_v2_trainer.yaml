@@ -34,8 +34,8 @@ env:
   denoise:
     enable: True
     mode: online
-    # Ordered active pool: each gamefile keeps its own rho/history/slope and is
-    # replaced from the pool cursor once its recent rho slope is stable.
+    # Fresh-gamefile curriculum: every step consumes a new shuffled pool batch;
+    # rho is shared and updated across gamefiles of the same task type.
     v2:
       enabled: True
       initial_rho: 0.0
@@ -43,9 +43,7 @@ env:
       max_rho: 0.5
       target_accuracy: 0.75
       alpha: 0.2
-      history_window: 10
-      min_history: 2
-      slope_threshold: 0.0075
+      shuffle_seed: ${env.seed}
     main_rollout_n: 0
     sub_rollout_k: 16
     # mixed: clean and denoise rollouts share one GRPO advantage group.

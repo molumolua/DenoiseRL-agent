@@ -139,8 +139,17 @@ class TaskRunner:
             denoise_processor=None,
         )
         if hasattr(traj_collector, "configure_v2"):
-            alfworld_game_files = getattr(getattr(envs, "envs", None), "game_files", ())
-            traj_collector.configure_v2(alfworld_game_files)
+            alfworld_envs = getattr(envs, "envs", None)
+            alfworld_game_files = getattr(alfworld_envs, "game_files", ())
+            alfworld_gamefile_task_types = getattr(
+                alfworld_envs,
+                "game_file_task_types",
+                {},
+            )
+            traj_collector.configure_v2(
+                alfworld_game_files,
+                alfworld_gamefile_task_types,
+            )
 
         train_dataset = create_rl_dataset(config.data.train_files, config.data, tokenizer, processor)
         val_dataset = create_rl_dataset(config.data.val_files, config.data, tokenizer, processor)

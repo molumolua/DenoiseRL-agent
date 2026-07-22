@@ -158,7 +158,7 @@ class OnlineDenoisePPOTrainer(RayPPOTrainer):
         self.traj_collector.load_v2_state_dict(
             json.loads(state_path.read_text(encoding="utf-8"))
         )
-        print(f"[denoise v2] restored active gamefile pool state from {state_path}.")
+        print(f"[denoise v2] restored task-type curriculum state from {state_path}.")
         return result
 
     def _add_optional_worker_classes(self, pool_to_cls, solver_cfg):
