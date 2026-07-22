@@ -35,8 +35,8 @@ exec bash "${SCRIPT_DIR}/run_denoise_grpo_train_base.sh" \
   "+data.dataloader_num_workers=0" \
   "algorithm.filter_groups.enable=False" \
   "algorithm.use_kl_in_reward=False" \
-  "actor_rollout_ref.actor.use_kl_loss=False" \
-  "actor_rollout_ref.actor.kl_loss_coef=0.0" \
+  "actor_rollout_ref.actor.use_kl_loss=True" \
+  "actor_rollout_ref.actor.kl_loss_coef=0.01" \
   "env.denoise.v2.enabled=True" \
   "env.denoise.v2.initial_rho=${V2_INITIAL_RHO}" \
   "env.denoise.v2.min_rho=${V2_MIN_RHO}" \
