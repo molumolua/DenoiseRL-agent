@@ -63,6 +63,7 @@ class AlfworldWorker:
         self.base_env = base_env
         self.default_env = self._make_env()
         self.env = self.default_env
+        self.current_gamefile = None
 
     def _make_env(self, game_files=None):
         try:
@@ -81,6 +82,7 @@ class AlfworldWorker:
         if self.env is not self.default_env and hasattr(self.env, "close"):
             self.env.close()
         self.env = self.default_env
+        self.current_gamefile = None
 
     def _extract_prefix_actions(self, trajectory_prefix):
         if not trajectory_prefix:
@@ -131,8 +133,11 @@ class AlfworldWorker:
     def reset(self, trajectory_prefix=None, gamefile=None):
         """Reset the environment, optionally pinning it to a specific gamefile."""
         if gamefile:
-            self._close_replay_env()
-            self.env = self._make_env(game_files=[gamefile])
+            gamefile = str(gamefile)
+            if self.current_gamefile != gamefile:
+                self._close_replay_env()
+                self.env = self._make_env(game_files=[gamefile])
+                self.current_gamefile = gamefile
         else:
             self._close_replay_env()
         return self._reset_current_env(trajectory_prefix)

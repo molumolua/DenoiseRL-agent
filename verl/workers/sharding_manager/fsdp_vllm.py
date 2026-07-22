@@ -61,7 +61,8 @@ class FSDPVLLMShardingManager(BaseShardingManager):
         device_mesh: DeviceMesh = None,
         offload_param: bool = False,
         load_format: str = 'dummy_hf',
-        layered_summon: bool = True
+        layered_summon: bool = True,
+        sync_weights_every_generation: bool = True,
     ):
         self.module = module
         # For AsyncLLM, inference_engine and model_runner are defer intialized in vLLMAsyncRollout.load_model
@@ -80,6 +81,7 @@ class FSDPVLLMShardingManager(BaseShardingManager):
         self.offload_param = offload_param
         self.load_format = load_format
         self.layered_summon = layered_summon
+        self.sync_weights_every_generation = sync_weights_every_generation
 
         # Full params
         self.full_params = full_params
@@ -166,44 +168,62 @@ class FSDPVLLMShardingManager(BaseShardingManager):
         # vllm: https://github.com/vllm-project/vllm/blob/v0.7.3/vllm/device_allocator/cumem.py#L103
         get_torch_device().empty_cache()
 
-        log_gpu_memory_usage("Before state_dict() in sharding manager memory", logger=logger)
-        if self.offload_param:
-            load_fsdp_model_to_gpu(self.module)
-
-        peft_config = None
-        if isinstance(self.module._fsdp_wrapped_module, PeftModel):
-            peft_config = self.module._fsdp_wrapped_module.peft_config.get('default', None)
-            params = __collect_lora_params()
-        else:
-            params = self.module.state_dict()
-        log_gpu_memory_usage("After state_dict() in sharding manager memory", logger=logger)
-
-        # Copy, not share memory
-        load_format = "hf" if self.full_params else "dtensor"
-
-        if vllm_version in (
+        uses_legacy_vllm = vllm_version in (
             "0.5.4",
             "0.6.3",
-        ):
-            self.inference_engine.sync_model_weights(params, load_format=load_format)
-            log_gpu_memory_usage("After sync model weights in sharding manager", logger=logger)
-            del params
+        )
+        # Legacy vLLM offloads weights entirely in __exit__, so it still needs a
+        # full sync on every entry. Newer vLLM can wake the already-synced fixed
+        # weights from sleep without rebuilding and copying the FSDP state dict.
+        should_sync_weights = (
+            uses_legacy_vllm
+            or self.sync_weights_every_generation
+            or not self.base_sync_done
+        )
+
+        if should_sync_weights:
+            log_gpu_memory_usage("Before state_dict() in sharding manager memory", logger=logger)
+            if self.offload_param:
+                load_fsdp_model_to_gpu(self.module)
+
+            peft_config = None
+            if isinstance(self.module._fsdp_wrapped_module, PeftModel):
+                peft_config = self.module._fsdp_wrapped_module.peft_config.get('default', None)
+                params = __collect_lora_params()
+            else:
+                params = self.module.state_dict()
+            log_gpu_memory_usage("After state_dict() in sharding manager memory", logger=logger)
+
+            # Copy, not share memory
+            load_format = "hf" if self.full_params else "dtensor"
+
+            if uses_legacy_vllm:
+                self.inference_engine.sync_model_weights(params, load_format=load_format)
+                log_gpu_memory_usage("After sync model weights in sharding manager", logger=logger)
+                del params
+            else:
+                if "tags" in inspect.signature(self.inference_engine.wake_up).parameters:
+                    self.inference_engine.wake_up(tags=["weights"])
+                else:
+                    self.inference_engine.wake_up()
+
+                # update model params
+                self.update_params(params, peft_config=peft_config)
+                log_gpu_memory_usage("After sync model weights in sharding manager", logger=logger)
+                del params
+                if self.offload_param:
+                    offload_fsdp_model_to_cpu(self.module)
+                get_torch_device().empty_cache()
+
+                if "tags" in inspect.signature(self.inference_engine.wake_up).parameters:
+                    self.inference_engine.wake_up(tags=["kv_cache"])
         else:
+            logger.debug("Wake fixed vLLM rollout without resyncing FSDP weights.")
             if "tags" in inspect.signature(self.inference_engine.wake_up).parameters:
                 self.inference_engine.wake_up(tags=["weights"])
+                self.inference_engine.wake_up(tags=["kv_cache"])
             else:
                 self.inference_engine.wake_up()
-
-            # update model params
-            self.update_params(params, peft_config=peft_config)
-            log_gpu_memory_usage("After sync model weights in sharding manager", logger=logger)
-            del params
-            if self.offload_param:
-                offload_fsdp_model_to_cpu(self.module)
-            get_torch_device().empty_cache()
-
-            if "tags" in inspect.signature(self.inference_engine.wake_up).parameters:
-                self.inference_engine.wake_up(tags=["kv_cache"])
 
         log_gpu_memory_usage("After del state_dict and empty_cache in sharding manager", logger=logger)
 

@@ -452,6 +452,9 @@ class ActorRolloutRefWorker(Worker):
                 offload_param=self._is_offload_param,
                 load_format=self.config.rollout.load_format,
                 layered_summon=self.config.rollout.get('layered_summon', False),
+                sync_weights_every_generation=self.config.rollout.get(
+                    "sync_weights_every_generation", True
+                ),
             )
             log_gpu_memory_usage("After building sharding manager", logger=logger)
 

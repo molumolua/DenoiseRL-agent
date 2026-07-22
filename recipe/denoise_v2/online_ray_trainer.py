@@ -49,6 +49,10 @@ class OnlineDenoisePPOTrainer(RayPPOTrainer):
         with open_dict(denoise_cfg):
             denoise_cfg.model.path = str(model_path)
             denoise_cfg.rollout.n = 1
+            # This worker is inference-only and never receives actor updates. Its
+            # FSDP weights need to initialize vLLM once, then subsequent denoiser
+            # steps can wake the sleeping engine without copying the same model.
+            denoise_cfg.rollout.sync_weights_every_generation = False
 
             overrides = {
                 "name": "rollout_name",

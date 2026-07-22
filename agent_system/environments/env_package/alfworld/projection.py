@@ -16,12 +16,23 @@
 from typing import List
 import re
 
+
+def _normalize_action(action: str) -> str:
+    """Normalize model and environment actions for membership checks."""
+    return " ".join(str(action).strip().lower().split())
+
+
 def alfworld_projection(actions: List[str], action_pools: List[List[str]]):
     """
     An function to process the actions
     actions: the list of actions to be processeed, it is a list of strings.
     action_pools: the list of action pools, each pool is a list of strings.
     """
+
+    if len(actions) != len(action_pools):
+        raise ValueError(
+            f"actions/action_pools length mismatch: {len(actions)} vs {len(action_pools)}"
+        )
 
     valids = [0] * len(actions)
 
@@ -40,11 +51,18 @@ def alfworld_projection(actions: List[str], action_pools: List[List[str]]):
                 actions[i] = actions[i][-30:]  # 0 is invalid action for Sokoban
                 continue
 
-            # Extract just the content between the tags
-            extracted_action = actions[i][start_idx + len(start_tag):end_idx].strip().lower()
-            
-            actions[i] = extracted_action
-            valids[i] = 1
+            # Extract just the content between the tags. A well-formed response is
+            # valid only when it selects an action offered by this environment.
+            extracted_action = _normalize_action(
+                actions[i][start_idx + len(start_tag):end_idx]
+            )
+            normalized_action_pool = {
+                _normalize_action(candidate): str(candidate)
+                for candidate in action_pools[i]
+            }
+
+            actions[i] = normalized_action_pool.get(extracted_action, extracted_action)
+            valids[i] = int(extracted_action in normalized_action_pool)
 
         except:
             actions[i] = actions[i][-30:]
