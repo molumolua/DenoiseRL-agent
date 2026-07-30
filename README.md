@@ -1,3 +1,50 @@
+# DenoiseRL-Agent
+
+This repository hosts the interactive-agent implementation of **[DenoiseRL](https://github.com/ALEX-nlp/DenoiseRL)**, built on top of `verl-agent`. The mathematical-reasoning implementation lives in the main DenoiseRL repository; this repository adapts the same recovery objective and adaptive noise curriculum to multi-step agent trajectories.
+
+For ALFWorld, incorrect trajectories from a weaker agent are converted into noisy action prefixes. The policy learns to recover from those prefixes, while the curriculum:
+
+- controls prefix length in environment steps rather than reasoning lines;
+- maintains an independent noise ratio for each ALFWorld task family;
+- updates each ratio from online recovery accuracy; and
+- trains on 16 recovery rollouts per group without additional clean rollout slots.
+
+The primary implementation is in [`recipe/denoise_v2`](./recipe/denoise_v2). Its README documents the gamefile pool, curriculum state, training entry point, and exhaustive seen/unseen evaluation.
+
+## DenoiseRL ALFWorld results
+
+Experiments use Qwen2.5-7B-Instruct as the policy and Qwen2.5-1.5B-Instruct to supply noisy action prefixes.
+
+| Method | Seen success rate | Unseen success rate |
+| --- | ---: | ---: |
+| Base model | 13.6 | 12.7 |
+| GRPO | 80.7 | 79.9 |
+| **DenoiseRL-GRPO** | **96.3** | **88.1** |
+
+DenoiseRL-GRPO improves over GRPO by 15.6 points on seen environments and 8.2 points on unseen environments.
+
+## Quick start
+
+Prepare ALFWorld data and launch DenoiseRL v2:
+
+```bash
+bash recipe/denoise_v2/setup_data.sh --download --offline
+bash recipe/denoise_v2/run_denoise_grpo_train.sh
+```
+
+Evaluate every supported gamefile in both splits:
+
+```bash
+CKPT_DIR=/path/to/experiment-or-global_step \
+  bash recipe/denoise_v2/run_denoise_grpo_eval.sh
+```
+
+See the [main DenoiseRL repository](https://github.com/ALEX-nlp/DenoiseRL) for the method overview, mathematical experiments, and the v1/v2 recipe map.
+
+---
+
+## Upstream verl-agent documentation
+
 <p align="center">
     <img src="./docs/gigpo/logo-verl-agent.png" alt="logo" width="55%">
 </p>
@@ -14,7 +61,7 @@
   <a href="https://arxiv.org/abs/2505.10978">
     <img src="https://img.shields.io/badge/arXiv-Paper-red?style=flat-square&logo=arxiv" alt="arXiv Paper"></a>
   &nbsp;
-  <a href="https://github.com/langfengQ/verl-agent">
+  <a href="https://github.com/ALEX-nlp/DenoiseRL-agent">
     <img src="https://img.shields.io/badge/GitHub-Project-181717?style=flat-square&logo=github" alt="GitHub Project"></a>
   &nbsp;
   <a href="https://huggingface.co/collections/langfeng01/verl-agent-684970e8f51babe2a6d98554">
@@ -23,14 +70,14 @@
   <a href="https://x.com/langfengq/status/1930848580505620677">
     <img src="https://img.shields.io/badge/Twitter-Channel-000000?style=flat-square&logo=x" alt="X Channel"></a>
   &nbsp;
-  <a href="https://github.com/langfengQ/verl-agent/blob/master/LICENSE">
+  <a href="https://github.com/ALEX-nlp/DenoiseRL-agent/blob/master/LICENSE">
     <img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg?style=flat-square" alt="License"></a>
   &nbsp;
-  <a href="https://github.com/langfengQ/verl-agent/issues">
-    <img src="https://img.shields.io/github/issues/langfengQ/verl-agent?style=flat-square&color=green" alt="GitHub issues"></a>
+  <a href="https://github.com/ALEX-nlp/DenoiseRL-agent/issues">
+    <img src="https://img.shields.io/github/issues/ALEX-nlp/DenoiseRL-agent?style=flat-square&color=green" alt="GitHub issues"></a>
   &nbsp;
-  <a href="https://github.com/langfengQ/verl-agent/stargazers">
-    <img src="https://img.shields.io/github/stars/langfengQ/verl-agent?style=social" alt="Repo stars"></a>
+  <a href="https://github.com/ALEX-nlp/DenoiseRL-agent/stargazers">
+    <img src="https://img.shields.io/github/stars/ALEX-nlp/DenoiseRL-agent?style=social" alt="Repo stars"></a>
   &nbsp;
 </p>
 
